@@ -3,13 +3,35 @@ services:
     image: postgres:17
     container_name: devmatch-db
     environment:
-      POSTGRES_USER: devmatch
-      POSTGRES_PASSWORD: devmatch
-      POSTGRES_DB: devmatch
+      POSTGRES_USER: ${POSTGRES_USER:-devmatch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devmatch}
+      POSTGRES_DB: ${POSTGRES_DB:-devmatch}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-devmatch} -d ${POSTGRES_DB:-devmatch}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    container_name: devmatch-api
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-devmatch}:${POSTGRES_PASSWORD:-devmatch}@db:5432/${POSTGRES_DB:-devmatch}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set in the environment or .env file}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DEBUG: ${DEBUG:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
   postgres_data:

@@ -1,0 +1,249 @@
+import { useState, useEffect } from 'react'
+import { useNavigate, useParams, Link } from 'react-router-dom'
+import { ArrowLeft, Plus, Trash2 } from 'lucide-react'
+import Card from '../components/ui/Card'
+import Input from '../components/ui/Input'
+import Textarea from '../components/ui/Textarea'
+import Select from '../components/ui/Select'
+import Button from '../components/ui/Button'
+import Badge from '../components/ui/Badge'
+import { api } from '../api/client'
+import { useToast } from '../context/ToastContext'
+
+const SKILL_CATEGORIES = [
+  { value: 'language', label: 'Language' },
+  { value: 'framework', label: 'Framework' },
+  { value: 'tool', label: 'Tool' },
+  { value: 'domain', label: 'Domain' },
+  { value: 'other', label: 'Other' },
+]
+
+export default function TeamForm({ mode }) {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const { toast } = useToast()
+  const isEdit = mode === 'edit'
+
+  const [form, setForm] = useState({
+    title: '',
+    description: '',
+    tech_stack_input: '',
+    required_skills: [],
+    poster_url: '',
+    max_members: 4,
+    college: '',
+    require_same_college: false,
+  })
+  const [skillName, setSkillName] = useState('')
+  const [skillCategory, setSkillCategory] = useState('language')
+  const [loading, setLoading] = useState(isEdit)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!isEdit) return
+    api
+      .getTeamProject(id)
+      .then((p) => {
+        setForm({
+          title: p.title,
+          description: p.description || '',
+          tech_stack_input: (p.tech_stack || []).join(', '),
+          required_skills: (p.required_skills || []).map((s) => ({
+            name: s.name,
+            category: s.category,
+          })),
+          poster_url: p.poster_url || '',
+          max_members: p.max_members,
+          college: p.college || '',
+          require_same_college: p.require_same_college,
+        })
+      })
+      .catch((err) => {
+        toast(err.message, 'error')
+        navigate('/teams')
+      })
+      .finally(() => setLoading(false))
+  }, [isEdit, id, navigate, toast])
+
+  const set = (key) => (e) => {
+    const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value
+    setForm((f) => ({ ...f, [key]: value }))
+  }
+
+  const addSkill = () => {
+    const name = skillName.trim()
+    if (!name) return
+    if (form.required_skills.some((s) => s.name.toLowerCase() === name.toLowerCase())) {
+      toast('Skill already added', 'error')
+      return
+    }
+    setForm((f) => ({
+      ...f,
+      required_skills: [...f.required_skills, { name, category: skillCategory }],
+    }))
+    setSkillName('')
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    if (form.require_same_college && !form.college.trim()) {
+      toast('College is required when same-college is enabled', 'error')
+      return
+    }
+    setSaving(true)
+    try {
+      const payload = {
+        title: form.title.trim(),
+        description: form.description.trim() || null,
+        tech_stack: form.tech_stack_input.split(',').map((t) => t.trim()).filter(Boolean),
+        required_skills: form.required_skills,
+        poster_url: form.poster_url.trim() || null,
+        max_members: parseInt(form.max_members, 10),
+        college: form.college.trim() || null,
+        require_same_college: form.require_same_college,
+      }
+      if (isEdit) {
+        await api.updateTeamProject(id, payload)
+        toast('Team updated')
+        navigate(`/teams/${id}`)
+      } else {
+        const created = await api.createTeamProject(payload)
+        toast('Team created')
+        navigate(`/teams/${created.id}`)
+      }
+    } catch (err) {
+      toast(err.message, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="page">
+        <div className="skeleton" style={{ width: 200, height: 28, marginBottom: 20 }} />
+        <div className="skeleton" style={{ height: 400 }} />
+      </div>
+    )
+  }
+
+  return (
+    <div className="page">
+      <Link to={isEdit ? `/teams/${id}` : '/teams'} className="back-link">
+        <ArrowLeft size={16} /> Back to teams
+      </Link>
+
+      <div className="page-header">
+        <div className="page-header-text">
+          <h1 className="page-title">{isEdit ? 'Edit team' : 'Create a team'}</h1>
+          <p className="page-subtitle">
+            {isEdit ? 'Update your hackathon team details' : 'Start a hackathon team and find developers with matching skills'}
+          </p>
+        </div>
+      </div>
+
+      <form onSubmit={handleSubmit}>
+        <div className="team-form-grid">
+          <Card className="review-card">
+            <div className="review-section-header">
+              <h3 className="review-section-title">Basics</h3>
+            </div>
+            <div className="review-form">
+              <Input label="Team name" value={form.title} onChange={set('title')} placeholder="e.g. AI Builders Hackathon Team" required maxLength={200} />
+              <Textarea label="Description" value={form.description} onChange={set('description')} placeholder="What will you build? What is the goal?" />
+              <Input label="Poster / image URL (optional)" value={form.poster_url} onChange={set('poster_url')} placeholder="https://..." />
+              <Input label="Tech stack (comma-separated)" value={form.tech_stack_input} onChange={set('tech_stack_input')} placeholder="e.g. Python, React, PostgreSQL" hint="Free-form technologies used by the team" />
+            </div>
+          </Card>
+
+          <Card className="review-card">
+            <div className="review-section-header">
+              <h3 className="review-section-title">Required skills</h3>
+              <span className="section-count">{form.required_skills.length}</span>
+            </div>
+            <p className="section-empty" style={{ marginBottom: 12 }}>
+              Used to match developers to your team. Categories improve match quality.
+            </p>
+            <div className="team-skill-add">
+              <input
+                className="input"
+                placeholder="e.g. Python"
+                value={skillName}
+                onChange={(e) => setSkillName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    addSkill()
+                  }
+                }}
+              />
+              <select className="input select team-skill-cat" value={skillCategory} onChange={(e) => setSkillCategory(e.target.value)}>
+                {SKILL_CATEGORIES.map((c) => (
+                  <option key={c.value} value={c.value}>{c.label}</option>
+                ))}
+              </select>
+              <Button type="button" size="sm" variant="secondary" onClick={addSkill}>
+                <Plus size={14} /> Add
+              </Button>
+            </div>
+            {form.required_skills.length > 0 && (
+              <div className="team-skill-chips">
+                {form.required_skills.map((s) => (
+                  <span key={s.name.toLowerCase()} className="team-skill-chip">
+                    {s.name} <Badge variant="neutral">{s.category}</Badge>
+                    <button
+                      type="button"
+                      className="team-skill-remove"
+                      onClick={() => setForm((f) => ({
+                        ...f,
+                        required_skills: f.required_skills.filter(
+                          (x) => x.name.toLowerCase() !== s.name.toLowerCase()
+                        ),
+                      }))}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          <Card className="review-card">
+            <div className="review-section-header">
+              <h3 className="review-section-title">Team settings</h3>
+            </div>
+            <div className="review-form">
+              <Input
+                label="Max team size (including you)"
+                type="number"
+                min={2}
+                max={50}
+                value={form.max_members}
+                onChange={set('max_members')}
+                required
+              />
+              <Input label="College (optional)" value={form.college} onChange={set('college')} placeholder="e.g. MIT" maxLength={255} />
+              <label className="toggle-row">
+                <input type="checkbox" checked={form.require_same_college} onChange={set('require_same_college')} />
+                <span className="toggle-label">
+                  <span className="toggle-title">Require teammates from the same college</span>
+                  <span className="toggle-desc">Only developers from the college above can join</span>
+                </span>
+              </label>
+            </div>
+          </Card>
+        </div>
+
+        <div className="review-footer">
+          <Button type="button" variant="ghost" onClick={() => navigate(isEdit ? `/teams/${id}` : '/teams')}>
+            Cancel
+          </Button>
+          <Button type="submit" loading={saving}>
+            {isEdit ? 'Save changes' : 'Create team'}
+          </Button>
+        </div>
+      </form>
+    </div>
+  )
+}
