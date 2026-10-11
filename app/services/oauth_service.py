@@ -31,7 +31,6 @@ from app.core.exceptions import (
     NotFoundException,
     ValidationException,
 )
-from app.core.security import create_access_token
 from app.db.models.oauth_account import OAuthAccount
 from app.db.models.profile import DeveloperProfile
 from app.db.models.user import User
@@ -289,7 +288,9 @@ class OAuthService:
         access_token = self.exchange_code(provider, code)
         profile = self.fetch_profile(provider, access_token)
         user = self.find_or_create_user(provider, profile)
-        return Token(access_token=create_access_token(user.id))
+        from app.services.auth_service import AuthService
+
+        return AuthService(self.db).create_token_pair(user)
 
     def find_or_create_user(self, provider: str, profile: ProviderProfile) -> User:
         if not profile.provider_user_id:

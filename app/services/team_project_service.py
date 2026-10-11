@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core import cache as result_cache
@@ -69,6 +70,13 @@ class TeamProjectService:
             college=college,
             college_id=college_id,
             require_same_college=data.require_same_college,
+            kind=(data.kind or "project").strip().lower(),
+            category=(data.category.strip() or None) if data.category else None,
+            hackathon_name=(data.hackathon_name.strip() or None) if data.hackathon_name else None,
+            location=(data.location.strip() or None) if data.location else None,
+            work_mode=(data.work_mode.strip().lower() or None) if data.work_mode else None,
+            allow_member_polls=data.allow_member_polls,
+            allow_member_invites=data.allow_member_invites,
         )
         project = self.team_repo.create(project)
         self.team_repo.add_member(project.id, creator_id, role="creator")
@@ -83,10 +91,140 @@ class TeamProjectService:
         return self.to_response(self.team_repo.get_by_id(project.id))
 
     def list_projects(
-        self, skip: int = 0, limit: int = 20, college: str | None = None, q: str | None = None
-    ) -> list[TeamProjectResponse]:
-        projects = self.team_repo.list_projects(skip=skip, limit=limit, college=college, q=q)
-        return [self.to_response(p) for p in projects]
+        self,
+        skip: int = 0,
+        limit: int = 20,
+        college: str | None = None,
+        q: str | None = None,
+        kind: str | None = None,
+        category: str | None = None,
+        location: str | None = None,
+        work_mode: str | None = None,
+        hackathon: str | None = None,
+        tech: list[str] | None = None,
+        match_my_stack: bool = False,
+        open_only: bool = False,
+        sort: str = "newest",
+        viewer_id: int | None = None,
+    ) -> tuple[list[TeamProjectResponse], int]:
+        from app.services.matching_service import normalize_skill_name
+
+        needs_scoring = (
+            bool(tech)
+            or match_my_stack
+            or open_only
+            or sort != "newest"
+            or viewer_id is not None
+        )
+        if match_my_stack and viewer_id is None:
+            raise ValidationException("Log in to use Match my tech stack")
+
+        if not needs_scoring:
+            # Fast path: pure newest-first listing with exact DB pagination
+            # and totals — no 500-row cap, no per-row queries beyond the page.
+            projects = self.team_repo.list_projects(
+                skip=skip,
+                limit=limit,
+                college=college,
+                q=q,
+                kind=kind,
+                category=category,
+                location=location,
+                work_mode=work_mode,
+                hackathon=hackathon,
+            )
+            total = self.team_repo.count_projects(
+                college=college,
+                q=q,
+                kind=kind,
+                category=category,
+                location=location,
+                work_mode=work_mode,
+                hackathon=hackathon,
+            )
+            return ([self.to_response(p) for p in projects], total)
+
+        projects = self.team_repo.list_projects_filtered(
+            college=college,
+            q=q,
+            kind=kind,
+            category=category,
+            location=location,
+            work_mode=work_mode,
+            hackathon=hackathon,
+        )
+
+        # Viewer skill set for tech filtering + match scoring.
+        viewer_norms: set[str] = set()
+        if viewer_id is not None:
+            viewer_norms = self._user_skill_norms(viewer_id)
+        wanted_norms: set[str] = set()
+        if match_my_stack:
+            wanted_norms = set(viewer_norms)
+        for item in tech or []:
+            cleaned = (item or "").strip()
+            if cleaned:
+                wanted_norms.add(normalize_skill_name(cleaned))
+
+        scored: list[tuple[TeamProject, float, int]] = []
+        for project in projects:
+            member_count = self.team_repo.count_members(project.id)
+            if open_only and member_count >= project.max_members:
+                continue
+            coverage = 0.0
+            if wanted_norms or viewer_id is not None:
+                required = self._team_required_norms(project)
+                if required:
+                    if wanted_norms:
+                        hit = required & wanted_norms
+                        if not hit:
+                            continue
+                        coverage = len(required & (wanted_norms | viewer_norms)) / len(required)
+                    else:
+                        coverage = len(required & viewer_norms) / len(required)
+            scored.append((project, round(coverage, 4), member_count))
+
+        if sort == "tech_match":
+            scored.sort(key=lambda item: (item[1], item[0].created_at), reverse=True)
+        elif sort == "relevance":
+            scored.sort(
+                key=lambda item: (
+                    item[1] + (0.05 if item[2] < item[0].max_members else 0.0),
+                    item[0].created_at,
+                ),
+                reverse=True,
+            )
+        # "newest" keeps repo order (created_at desc).
+
+        total = len(scored)
+        page = scored[skip : skip + limit]
+        return (
+            [
+                self.to_response(p, match_coverage=cov, member_count=count)
+                for p, cov, count in page
+            ],
+            total,
+        )
+
+    def list_joined(self, user_id: int) -> list[TeamProjectResponse]:
+        """Teams where the user is a member but not the creator."""
+        joined = []
+        for project_id in self.team_repo.list_member_project_ids(user_id):
+            project = self.team_repo.get_by_id(project_id)
+            if project is not None and project.creator_id != user_id:
+                joined.append(self.to_response(project))
+        return joined
+
+    def _team_required_norms(self, project) -> set[str]:
+        from app.services.matching_service import normalize_skill_name
+
+        names = [link.skill.name for link in self.team_repo.get_required_skills(project.id)]
+        names.extend(project.tech_stack or [])
+        return {
+            normalize_skill_name(name)
+            for name in names
+            if (name or "").strip()
+        }
 
     def get_detail(self, project_id: int, viewer_id: int | None) -> TeamProjectDetailResponse:
         project = self.team_repo.get_by_id(project_id)
@@ -121,6 +259,15 @@ class TeamProjectService:
             )
             update_data["college_id"] = cid
             update_data["college"] = display
+        for text_field in ("category", "hackathon_name", "location"):
+            if text_field in update_data:
+                value = update_data[text_field]
+                update_data[text_field] = (value.strip() or None) if value else None
+        if "kind" in update_data and update_data["kind"] is not None:
+            update_data["kind"] = (update_data["kind"] or "project").strip().lower()
+        if "work_mode" in update_data and update_data["work_mode"] is not None:
+            value = (update_data["work_mode"] or "").strip().lower()
+            update_data["work_mode"] = value or None
 
         new_max = update_data.get("max_members")
         if new_max is not None:
@@ -220,7 +367,7 @@ class TeamProjectService:
         if application is None or application.team_project_id != project_id:
             raise NotFoundException("Application not found")
         if application.status != TeamRequestStatus.PENDING:
-            raise ValidationException("Application is not pending")
+            raise ConflictException("Application is not pending")
         if self.team_repo.get_membership(project_id, application.user_id) is not None:
             raise ConflictException("Applicant is already a member")
 
@@ -236,6 +383,11 @@ class TeamProjectService:
             self.team_repo.set_invitation_status(
                 pending_invite, TeamRequestStatus.ACCEPTED
             )
+        applicant = self.user_repo.get_by_id(application.user_id)
+        self._post_system_message(
+            project_id,
+            f"{applicant.username if applicant else 'A new member'} joined the team.",
+        )
         norms, display = self._required_norms(project_id)
         return self._to_application_response(
             application,
@@ -250,7 +402,7 @@ class TeamProjectService:
         if application is None or application.team_project_id != project_id:
             raise NotFoundException("Application not found")
         if application.status != TeamRequestStatus.PENDING:
-            raise ValidationException("Application is not pending")
+            raise ConflictException("Application is not pending")
         application = self.team_repo.set_application_status(
             application, TeamRequestStatus.REJECTED
         )
@@ -263,7 +415,7 @@ class TeamProjectService:
     def invite(
         self, requester_id: int, project_id: int, invitee_id: int, message: str | None
     ) -> TeamInvitationResponse:
-        project = self._get_owned_project(requester_id, project_id)
+        project = self._get_invite_rights(requester_id, project_id)
         invitee = self.user_repo.get_by_id(invitee_id)
         if invitee is None:
             raise NotFoundException("User not found")
@@ -306,7 +458,7 @@ class TeamProjectService:
         if invitation.invitee_id != requester_id:
             raise ForbiddenException("You cannot accept someone else's invitation")
         if invitation.status != TeamRequestStatus.PENDING:
-            raise ValidationException("Invitation is not pending")
+            raise ConflictException("Invitation is not pending")
 
         project = self._get_project_or_404(invitation.team_project_id)
         if self.team_repo.get_membership(project.id, requester_id) is not None:
@@ -326,6 +478,10 @@ class TeamProjectService:
             )
 
         invitee = self.user_repo.get_by_id(requester_id)
+        self._post_system_message(
+            project.id,
+            f"{invitee.username if invitee else 'A new member'} joined the team.",
+        )
         return self._to_invitation_response(
             invitation, invitee.username if invitee else None
         )
@@ -339,7 +495,7 @@ class TeamProjectService:
         if invitation.invitee_id != requester_id:
             raise ForbiddenException("You cannot reject someone else's invitation")
         if invitation.status != TeamRequestStatus.PENDING:
-            raise ValidationException("Invitation is not pending")
+            raise ConflictException("Invitation is not pending")
         invitation = self.team_repo.set_invitation_status(
             invitation, TeamRequestStatus.REJECTED
         )
@@ -473,7 +629,9 @@ class TeamProjectService:
     def create_poll(
         self, requester_id: int, project_id: int, data: PollCreate
     ) -> PollResponse:
-        self._require_chat_unlocked(project_id, requester_id)
+        project = self._require_chat_unlocked(project_id, requester_id)
+        if requester_id != project.creator_id and not project.allow_member_polls:
+            raise ForbiddenException("Only the project creator can create polls")
         question = (data.question or "").strip()
         if not question:
             raise ValidationException("Poll question must not be empty")
@@ -497,6 +655,7 @@ class TeamProjectService:
             sender.username if sender else "Someone",
             question,
             options[:6],
+            allow_multiple=bool(data.allow_multiple),
         )
         return self._to_poll_response(poll, requester_id)
 
@@ -506,13 +665,27 @@ class TeamProjectService:
         self._require_chat_unlocked(project_id, requester_id)
         poll = self._get_poll_or_404(project_id, poll_id)
         if poll.is_closed:
-            raise ValidationException("This poll is closed")
+            raise ConflictException("This poll is closed")
         if not any(o.id == data.option_id for o in poll.options):
             raise ValidationException("Unknown poll option")
-        self.team_repo.cast_vote(poll_id, data.option_id, requester_id)
-        return self._to_poll_response(
-            self.team_repo.get_poll(poll_id), requester_id
-        )
+        try:
+            if poll.allow_multiple:
+                # Toggle this option; keep the rest.
+                if data.option_id in self.team_repo.voter_options(poll_id, requester_id):
+                    self.team_repo.remove_vote(poll_id, data.option_id, requester_id)
+                else:
+                    self.team_repo.cast_vote(poll_id, data.option_id, requester_id)
+            else:
+                self.team_repo.clear_votes(poll_id, requester_id)
+                self.team_repo.cast_vote(poll_id, data.option_id, requester_id)
+            self.db.commit()
+        except IntegrityError:
+            # Lost a concurrent-vote race — the vote is recorded either way.
+            self.db.rollback()
+        fresh = self.team_repo.get_poll(poll_id)
+        if fresh is None:
+            raise NotFoundException("Poll not found")
+        return self._to_poll_response(fresh, requester_id)
 
     def close_poll(
         self, requester_id: int, project_id: int, poll_id: int
@@ -534,6 +707,7 @@ class TeamProjectService:
     def _to_poll_response(self, poll, voter_id: int) -> PollResponse:
         counts = self.team_repo.vote_counts(poll.id)
         options = sorted(poll.options, key=lambda o: o.position)
+        my_options = self.team_repo.voter_options(poll.id, voter_id)
         return PollResponse(
             id=poll.id,
             team_project_id=poll.team_project_id,
@@ -541,13 +715,15 @@ class TeamProjectService:
             creator_username=poll.creator_username or "Someone",
             question=poll.question,
             is_closed=poll.is_closed,
+            allow_multiple=poll.allow_multiple,
             created_at=poll.created_at,
             total_votes=sum(counts.values()),
             options=[
                 PollOptionResponse(id=o.id, text=o.text, votes=counts.get(o.id, 0))
                 for o in options
             ],
-            my_option_id=self.team_repo.voter_option(poll.id, voter_id),
+            my_option_id=my_options[0] if my_options else None,
+            my_option_ids=my_options,
         )
 
     def remove_member(
@@ -570,12 +746,19 @@ class TeamProjectService:
                 raise ValidationException("Creator cannot be removed from the team")
 
         self.team_repo.remove_member(membership)
+        target = self.user_repo.get_by_id(target_user_id)
+        name = target.username if target else "A member"
+        if target_user_id == requester_id:
+            self._post_system_message(project_id, f"{name} left the team.")
+        else:
+            self._post_system_message(project_id, f"{name} was removed from the team.")
 
-    def to_response(self, project) -> TeamProjectResponse:
+    def to_response(self, project, match_coverage: float = 0.0, member_count: int | None = None) -> TeamProjectResponse:
         if project is None:
             raise NotFoundException("Team project not found")
         required = self.team_repo.get_required_skills(project.id)
-        member_count = self.team_repo.count_members(project.id)
+        if member_count is None:
+            member_count = self.team_repo.count_members(project.id)
         return TeamProjectResponse(
             id=project.id,
             creator_id=project.creator_id,
@@ -588,6 +771,14 @@ class TeamProjectService:
             college=project.college,
             college_id=project.college_id,
             require_same_college=project.require_same_college,
+            kind=project.kind or "project",
+            category=project.category,
+            hackathon_name=project.hackathon_name,
+            location=project.location,
+            work_mode=project.work_mode,
+            allow_member_polls=project.allow_member_polls,
+            allow_member_invites=project.allow_member_invites,
+            match_coverage=round(match_coverage, 4),
             required_skills=[
                 SkillBrief(id=link.skill.id, name=link.skill.name, category=link.skill.category)
                 for link in required
@@ -712,10 +903,32 @@ class TeamProjectService:
             raise ForbiddenException("Only the project creator can do this")
         return project
 
+    def _get_invite_rights(self, requester_id: int, project_id: int):
+        """Creator can always invite; members only when the team allows it."""
+        project = self._get_project_or_404(project_id)
+        if project.creator_id == requester_id:
+            return project
+        is_member = (
+            self.team_repo.get_membership(project_id, requester_id) is not None
+        )
+        if is_member and project.allow_member_invites:
+            return project
+        raise ForbiddenException("Only the project creator can invite (unless members are allowed in settings)")
+
+    def _post_system_message(self, project_id: int, body: str) -> None:
+        try:
+            self.team_repo.create_team_message(
+                project_id, None, "DevMatch", body[:2000]
+            )
+        except Exception:
+            # Notifications must never break the action itself.
+            self.db.rollback()
+
     def _check_capacity(self, project) -> None:
+        # State conflict (not a malformed request) → 409, not 422.
         member_count = self.team_repo.count_members(project.id)
         if member_count >= project.max_members:
-            raise ValidationException("Team is full")
+            raise ConflictException("Team is full")
 
     def _check_college(self, project, user_id: int) -> None:
         if not project.require_same_college:

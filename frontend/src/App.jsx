@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Routes, Route, Navigate, useLocation, Link } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
 import Layout from './components/Layout'
@@ -73,9 +74,41 @@ function NotFound() {
   )
 }
 
+const TITLES = [
+  [/^\/home$/, 'Home'],
+  [/^\/dashboard$/, 'My profile'],
+  [/^\/teammates$/, 'Find teammates'],
+  [/^\/developers\/[^/]+$/, 'Developer profile'],
+  [/^\/review-resume$/, 'Review resume'],
+  [/^\/teams\/new$/, 'Create a team'],
+  [/^\/teams\/[^/]+\/edit$/, 'Edit team'],
+  [/^\/teams\/[^/]+$/, 'Team'],
+  [/^\/teams$/, 'Teams'],
+  [/^\/messages$/, 'Messages'],
+  [/^\/login$/, 'Log in'],
+  [/^\/register$/, 'Create account'],
+]
+
+function RouteEffects() {
+  const { pathname } = useLocation()
+  useEffect(() => {
+    const match = TITLES.find(([re]) => re.test(pathname))
+    document.title = match ? `DevMatch — ${match[1]}` : 'DevMatch — Find your hackathon team'
+    // Instant jump (not smooth): navigation should feel snappy.
+    const root = document.documentElement
+    const prev = root.style.scrollBehavior
+    root.style.scrollBehavior = 'auto'
+    window.scrollTo(0, 0)
+    root.style.scrollBehavior = prev
+  }, [pathname])
+  return null
+}
+
 export default function App() {
   return (
-    <Routes>
+    <>
+      <RouteEffects />
+      <Routes>
       <Route path="/" element={<Landing />} />
       <Route
         path="/login"
@@ -114,6 +147,7 @@ export default function App() {
       </Route>
       <Route path="/recommendations" element={<Navigate to="/teammates" replace />} />
       <Route path="*" element={<NotFound />} />
-    </Routes>
+      </Routes>
+    </>
   )
 }

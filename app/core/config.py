@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_AUTH_PER_MINUTE: int = 30
     RATE_LIMIT_DEFAULT_PER_MINUTE: int = 120
+    TRUST_PROXY: bool = False
     RECOMMENDATION_CACHE_TTL_SECONDS: int = 60
 
     DB_POOL_SIZE: int = 10

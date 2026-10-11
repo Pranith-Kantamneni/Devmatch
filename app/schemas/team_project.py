@@ -7,6 +7,22 @@ from app.db.models.team_project import TeamRequestStatus
 from app.schemas.skill import SkillBrief
 
 
+WORK_MODES = ("remote", "hybrid", "onsite")
+PROJECT_KINDS = ("project", "hackathon")
+PROJECT_CATEGORIES = (
+    "AI/ML",
+    "Web Development",
+    "App Development",
+    "Cybersecurity",
+    "Cloud Computing",
+    "Data Science",
+    "Blockchain",
+    "IoT",
+    "Open Source",
+    "Other",
+)
+
+
 class TeamProjectSkillAdd(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     category: SkillCategory = SkillCategory.OTHER
@@ -22,6 +38,13 @@ class TeamProjectCreate(BaseModel):
     college: str | None = Field(default=None, max_length=255)
     college_id: str | None = Field(default=None, max_length=100)
     require_same_college: bool = False
+    kind: str = Field(default="project", pattern="^(project|hackathon)$")
+    category: str | None = Field(default=None, max_length=60)
+    hackathon_name: str | None = Field(default=None, max_length=200)
+    location: str | None = Field(default=None, max_length=120)
+    work_mode: str | None = Field(default=None, pattern="^(remote|hybrid|onsite)$")
+    allow_member_polls: bool = True
+    allow_member_invites: bool = False
 
     @model_validator(mode="after")
     def check_college_required(self):
@@ -39,6 +62,13 @@ class TeamProjectUpdate(BaseModel):
     college: str | None = Field(default=None, max_length=255)
     college_id: str | None = Field(default=None, max_length=100)
     require_same_college: bool | None = None
+    kind: str | None = Field(default=None, pattern="^(project|hackathon)$")
+    category: str | None = Field(default=None, max_length=60)
+    hackathon_name: str | None = Field(default=None, max_length=200)
+    location: str | None = Field(default=None, max_length=120)
+    work_mode: str | None = Field(default=None, pattern="^(remote|hybrid|onsite)$")
+    allow_member_polls: bool | None = None
+    allow_member_invites: bool | None = None
 
     @model_validator(mode="after")
     def check_college_consistency(self):
@@ -69,6 +99,14 @@ class TeamProjectResponse(BaseModel):
     college: str | None
     college_id: str | None = None
     require_same_college: bool
+    kind: str = "project"
+    category: str | None = None
+    hackathon_name: str | None = None
+    location: str | None = None
+    work_mode: str | None = None
+    allow_member_polls: bool = True
+    allow_member_invites: bool = False
+    match_coverage: float = Field(default=0.0, ge=0.0, le=1.0)
     required_skills: list[SkillBrief]
     created_at: datetime
     updated_at: datetime

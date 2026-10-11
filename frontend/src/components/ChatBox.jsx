@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Send } from 'lucide-react'
 import Avatar from './ui/Avatar'
 import Button from './ui/Button'
@@ -79,11 +80,31 @@ export default function ChatBox({
         ) : (
           messages.map((m) => {
             const mine = m.sender_username === currentUsername
+            if (!m.sender_id && m.sender_username === 'DevMatch') {
+              return (
+                <div key={m.id} className="chat-system">
+                  <span className="chat-system-text">{m.body}</span>
+                  <span className="chat-time" title={formatTime(m.created_at)}>
+                    {formatTime(m.created_at)}
+                  </span>
+                </div>
+              )
+            }
+            const avatar = <Avatar name={m.sender_username} size={28} />
+            const sender = <span className="chat-sender">{m.sender_username}</span>
             return (
               <div key={m.id} className={`chat-msg ${mine ? 'mine' : 'theirs'}`}>
-                {!mine && <Avatar name={m.sender_username} size={28} />}
+                {!mine && (m.sender_id ? (
+                  <Link to={`/developers/${m.sender_id}`} title={`View ${m.sender_username}'s profile`}>
+                    {avatar}
+                  </Link>
+                ) : avatar)}
                 <div className="chat-bubble">
-                  {!mine && <span className="chat-sender">{m.sender_username}</span>}
+                  {!mine && (m.sender_id ? (
+                    <Link to={`/developers/${m.sender_id}`} className="chat-sender-link" title={`View ${m.sender_username}'s profile`}>
+                      {sender}
+                    </Link>
+                  ) : sender)}
                   <p className="chat-text">{m.body}</p>
                   <span className="chat-time" title={formatTime(m.created_at)}>
                     {formatTime(m.created_at)}

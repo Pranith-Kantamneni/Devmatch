@@ -18,6 +18,7 @@ router = APIRouter(prefix="/recommendations", tags=["Recommendations"])
 )
 def get_recommendations(
     limit: int | None = Query(default=None, ge=1, le=100),
+    q: str | None = Query(default=None, max_length=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -27,4 +28,4 @@ def get_recommendations(
     limit = min(limit, settings.MATCHING_MAX_LIMIT)
 
     service = MatchingService(db, settings, EmbeddingService(settings))
-    return service.get_recommendations(current_user.id, limit)
+    return service.get_recommendations(current_user.id, limit, q=q)

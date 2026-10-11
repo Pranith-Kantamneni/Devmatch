@@ -80,9 +80,12 @@ const QUICK_ACTIONS = [
 export default function Home() {
   const { user } = useAuth()
   const [loading, setLoading] = useState(true)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [profile, setProfile] = useState(null)
   const [recs, setRecs] = useState(null)
+  const [recsFailed, setRecsFailed] = useState(false)
   const [myTeams, setMyTeams] = useState([])
+  const [joinedCount, setJoinedCount] = useState(0)
   const [invitations, setInvitations] = useState([])
   const [applications, setApplications] = useState([])
   const [chatRequests, setChatRequests] = useState(0)
@@ -92,35 +95,42 @@ export default function Home() {
     return day % TIPS.length
   })
 
+  const load = async () => {
+    setLoading(true)
+    setLoadFailed(false)
+    const [p, r, teams, joined, invs, apps, chat] = await Promise.allSettled([
+      api.getMyProfile(),
+      api.getRecommendations({ limit: 3 }),
+      api.listTeamProjects({ limit: 100 }),
+      api.listJoinedTeams(),
+      api.listMyInvitations(),
+      api.listMyApplications(),
+      api.chatOverview(),
+    ])
+    if (p.status === 'fulfilled') setProfile(p.value)
+    else setLoadFailed(true)
+    if (r.status === 'fulfilled') {
+      setRecs(r.value)
+      setRecsFailed(false)
+    } else {
+      setRecsFailed(true)
+    }
+    if (teams.status === 'fulfilled' && user) {
+      setMyTeams(teams.value.filter((t) => t.creator_id === user.id))
+    }
+    if (joined.status === 'fulfilled') setJoinedCount(joined.value.length)
+    if (invs.status === 'fulfilled') setInvitations(invs.value)
+    if (apps.status === 'fulfilled') setApplications(apps.value)
+    if (chat.status === 'fulfilled') {
+      setChatRequests((chat.value.incoming_requests || []).length)
+      setChatCount((chat.value.conversations || []).length)
+    }
+    setLoading(false)
+  }
+
   useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      const [p, r, teams, invs, apps, chat] = await Promise.allSettled([
-        api.getMyProfile(),
-        api.getRecommendations({ limit: 3 }),
-        api.listTeamProjects({ limit: 100 }),
-        api.listMyInvitations(),
-        api.listMyApplications(),
-        api.chatOverview(),
-      ])
-      if (cancelled) return
-      if (p.status === 'fulfilled') setProfile(p.value)
-      if (r.status === 'fulfilled') setRecs(r.value)
-      if (teams.status === 'fulfilled' && user) {
-        setMyTeams(teams.value.filter((t) => t.creator_id === user.id))
-      }
-      if (invs.status === 'fulfilled') setInvitations(invs.value)
-      if (apps.status === 'fulfilled') setApplications(apps.value)
-      if (chat.status === 'fulfilled') {
-        setChatRequests((chat.value.incoming_requests || []).length)
-        setChatCount((chat.value.conversations || []).length)
-      }
-      setLoading(false)
-    }
-    load()
-    return () => {
-      cancelled = true
-    }
+    load().catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user])
 
   const name = profile?.full_name?.split(' ')[0] || user?.username || 'builder'
@@ -171,6 +181,21 @@ export default function Home() {
     )
   }
 
+  if (loadFailed && !profile) {
+    return (
+      <div className="page">
+        <Card>
+          <EmptyState
+            icon={<Users size={32} />}
+            title="Couldn't load your home"
+            description="Check your connection and try again."
+            action={<Button size="sm" variant="secondary" onClick={load}>Retry</Button>}
+          />
+        </Card>
+      </div>
+    )
+  }
+
   return (
     <div className="page">
       {/* Greeting + strength */}
@@ -212,31 +237,44 @@ export default function Home() {
                 <Sparkles size={18} className="section-icon" />
                 <h3 className="section-title">Your top matches</h3>
               </div>
-              <Link to="/teammates"><Button size="sm" variant="secondary">View all <ArrowRight size={14} /></Button></Link>
+              <Link to="/teammates" className="btn btn-secondary btn-sm">View all <ArrowRight size={14} /></Link>
             </div>
-            {topRecs.length === 0 ? (
+            {recsFailed ? (
+              <div>
+                <p className="section-empty">
+                  Matches couldn't load. Your profile is fine — try again.
+                </p>
+                <div className="empty-action" style={{ marginTop: 12 }}>
+                  <Button size="sm" variant="secondary" onClick={load}>Retry</Button>
+                </div>
+              </div>
+            ) : topRecs.length === 0 ? (
               <div>
                 <p className="section-empty">
                   No matches yet — add skills and projects so the engine can rank developers for you.
                 </p>
                 <div className="empty-action" style={{ marginTop: 12 }}>
-                  <Link to="/dashboard"><Button size="sm">Complete my profile</Button></Link>
+                  <Link to="/dashboard" className="btn btn-primary btn-sm">Complete my profile</Link>
                 </div>
               </div>
             ) : (
               <div className="home-match-list">
-                {topRecs.map((rec) => (
-                  <Link key={rec.user.id} to={`/developers/${rec.user.id}`} className="home-match">
-                    <Avatar name={rec.profile.full_name || rec.user.username} size={44} />
-                    <span className="home-match-main">
-                      <span className="home-match-name">{rec.profile.full_name || rec.user.username}</span>
-                      <span className="home-match-sub">
-                        {(rec.skill_overlap || []).slice(0, 2).join(' · ') || 'New developer'}
+                {topRecs.map((rec) => {
+                  const displayName = rec.profile?.full_name || rec.user.username
+                  const overlap = (rec.skill_overlap || []).slice(0, 2).join(' · ')
+                  return (
+                    <Link key={rec.user.id} to={`/developers/${rec.user.id}`} className="home-match">
+                      <Avatar name={displayName} size={44} />
+                      <span className="home-match-main">
+                        <span className="home-match-name">{displayName}</span>
+                        <span className="home-match-sub">
+                          {overlap || (rec.profile?.bio ? rec.profile.bio.slice(0, 60) : 'Tap to view profile')}
+                        </span>
                       </span>
-                    </span>
-                    <span className="home-match-score">{Math.round(rec.similarity_score * 100)}%</span>
-                  </Link>
-                ))}
+                      <span className="home-match-score">{Math.round(rec.similarity_score * 100)}%</span>
+                    </Link>
+                  )
+                })}
               </div>
             )}
           </Card>
@@ -281,8 +319,8 @@ export default function Home() {
                 <span className="home-stat-label">Projects</span>
               </div>
               <div className="home-stat">
-                <span className="home-stat-value">{myTeams.length}</span>
-                <span className="home-stat-label">My teams</span>
+                <span className="home-stat-value">{myTeams.length + joinedCount}</span>
+                <span className="home-stat-label">Teams</span>
               </div>
               <div className="home-stat">
                 <span className="home-stat-value">{chatCount}</span>
@@ -292,14 +330,14 @@ export default function Home() {
           </Card>
 
           {/* My teams shortcut */}
-          {myTeams.length > 0 && (
+          {(myTeams.length > 0 || joinedCount > 0) && (
             <Card className="section-card">
               <div className="section-header">
                 <div className="section-title-wrap">
                   <Users size={18} className="section-icon" />
                   <h3 className="section-title">My teams</h3>
                 </div>
-                <Link to="/teams"><Button size="sm" variant="ghost">All</Button></Link>
+                <Link to="/teams?tab=mine" className="btn btn-ghost btn-sm">All</Link>
               </div>
               <ul className="home-team-list">
                 {myTeams.slice(0, 3).map((t) => (
@@ -311,6 +349,12 @@ export default function Home() {
                   </li>
                 ))}
               </ul>
+              {joinedCount > 0 && (
+                <p className="home-joined-note">
+                  +{joinedCount} joined team{joinedCount === 1 ? '' : 's'} ·{' '}
+                  <Link to="/teams?tab=mine" className="fit-link">view all</Link>
+                </p>
+              )}
             </Card>
           )}
 
@@ -331,9 +375,15 @@ export default function Home() {
               </button>
             </div>
             <p className="section-text">{tip.text}</p>
-            <div className="tip-dots" aria-hidden="true">
-              {TIPS.map((_, i) => (
-                <span key={i} className={`tip-dot ${i === tipIndex % TIPS.length ? 'active' : ''}`} />
+            <div className="tip-dots" role="group" aria-label="Choose tip">
+              {TIPS.map((t, i) => (
+                <button
+                  key={t.title}
+                  className={`tip-dot ${i === tipIndex % TIPS.length ? 'active' : ''}`}
+                  aria-label={`Show tip: ${t.title}`}
+                  aria-current={i === tipIndex % TIPS.length}
+                  onClick={() => setTipIndex(i)}
+                />
               ))}
             </div>
           </Card>

@@ -94,11 +94,13 @@ class MatchingService:
         self.team_project_repo = TeamProjectRepository(db)
 
     def get_recommendations(
-        self, user_id: int, limit: int
+        self, user_id: int, limit: int, q: str | None = None
     ) -> RecommendationListResponse:
         ttl = self.settings.RECOMMENDATION_CACHE_TTL_SECONDS
+        query_key = (q or "").strip().lower()
         cache_key = (
-            f"recs:{user_id}:{limit}:{result_cache.version(result_cache.user_scope(user_id))}"
+            f"recs:{user_id}:{limit}:{query_key}:"
+            f"{result_cache.version(result_cache.user_scope(user_id))}"
         )
         cached = result_cache.get(cache_key)
         if cached is not None:
@@ -113,6 +115,10 @@ class MatchingService:
         candidates = self.profile_repo.list_with_embeddings(
             exclude_user_id=user_id
         )
+        if query_key:
+            candidates = [
+                c for c in candidates if self._candidate_matches_query(c, query_key)
+            ]
         if not candidates:
             return RecommendationListResponse(
                 recommendations=[], total_candidates=0
@@ -202,6 +208,27 @@ class MatchingService:
         if not union:
             return 0.0
         return len(a & b) / len(union)
+
+    @staticmethod
+    def _candidate_matches_query(candidate: DeveloperProfile, query: str) -> bool:
+        """Free-text teammate search across identity + skills + projects."""
+        haystacks = [
+            (candidate.user.username or "").lower(),
+            (candidate.full_name or "").lower(),
+            (candidate.college or "").lower(),
+            (candidate.location or "").lower(),
+        ]
+        for user_skill in candidate.user.skills:
+            if user_skill.skill and user_skill.skill.name:
+                haystacks.append(user_skill.skill.name.lower())
+        for portfolio_project in candidate.user.projects:
+            if portfolio_project.title:
+                haystacks.append(portfolio_project.title.lower())
+            for link in portfolio_project.skills or []:
+                skill = getattr(link, "skill", None)
+                if skill is not None and skill.name:
+                    haystacks.append(skill.name.lower())
+        return any(query in text for text in haystacks)
 
     def get_project_recommendations(
         self, team_project_id: int, requester_id: int, limit: int

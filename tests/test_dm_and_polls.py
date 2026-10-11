@@ -218,7 +218,7 @@ class TestPolls:
             json={"option_id": vue_id},
             headers=h2,
         )
-        assert late.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert late.status_code == status.HTTP_409_CONFLICT
 
     def test_poll_validation(self, client):
         h1, _, project_id = self._two_member_team(client)

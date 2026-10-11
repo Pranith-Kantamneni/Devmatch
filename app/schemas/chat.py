@@ -65,6 +65,7 @@ class ChatStatusResponse(BaseModel):
 class PollCreate(BaseModel):
     question: str = Field(min_length=1, max_length=280)
     options: list[str] = Field(min_length=2, max_length=6)
+    allow_multiple: bool = False
 
 
 class PollVote(BaseModel):
@@ -84,7 +85,9 @@ class PollResponse(BaseModel):
     creator_username: str
     question: str
     is_closed: bool
+    allow_multiple: bool = False
     created_at: datetime
     total_votes: int = 0
     options: list[PollOptionResponse] = Field(default_factory=list)
     my_option_id: int | None = None
+    my_option_ids: list[int] = Field(default_factory=list)

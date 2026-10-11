@@ -171,9 +171,13 @@ Key design decisions:
 
 1. `POST /api/v1/auth/register` — validates input, hashes the password
    (Argon2), and creates the user.
-2. `POST /api/v1/auth/login` — verifies credentials and returns a JWT access
-   token (`{ "access_token": "...", "token_type": "bearer" }`).
-3. Protected routes require an `Authorization: Bearer <token>` header. The
+2. `POST /api/v1/auth/login` — accepts **email or username** plus password,
+   returns `{ access_token, refresh_token, token_type }`.
+3. `POST /api/v1/auth/refresh` — rotates a refresh token into a fresh pair
+   (single-use: the old token dies on rotation, 30-day lifetime).
+   The SPA retries 401s once through this flow before logging out.
+4. `POST /api/v1/auth/logout` — revokes the refresh token (204).
+5. Protected routes require an `Authorization: Bearer <token>` header. The
    `get_current_user` dependency decodes the JWT, loads the user, and injects
    it into the request.
 
@@ -307,7 +311,9 @@ All endpoints are prefixed with `/api/v1`.
 | Method | Path                              | Auth | Description                          |
 | ------ | --------------------------------- | ---- | ------------------------------------ |
 | POST   | `/auth/register`                  | No   | Register a new user                  |
-| POST   | `/auth/login`                     | No   | Log in, returns JWT                  |
+| POST   | `/auth/login`                     | No   | Log in with email or username, returns token pair |
+| POST   | `/auth/refresh`                   | No   | Rotate refresh token → fresh pair    |
+| POST   | `/auth/logout`                    | No   | Revoke a refresh token               |
 | GET    | `/users/`                         | No   | List users (public info, paginated)  |
 | GET    | `/users/me`                       | Yes  | Get current user                     |
 | GET    | `/profiles/me`                    | Yes  | Get own full profile                 |
@@ -318,9 +324,10 @@ All endpoints are prefixed with `/api/v1`.
 | POST   | `/profiles/me/projects`           | Yes  | Add a project                        |
 | DELETE | `/profiles/me/projects/{id}`      | Yes  | Remove a project                     |
 | POST   | `/profiles/me/parse-resume`       | Yes  | Parse a resume file (multipart PDF/DOCX/TXT, 10MB max) |
-| GET    | `/recommendations?limit=K`        | Yes  | Top-K developer recommendations      |
+| GET    | `/recommendations?limit=K&q=`    | Yes  | Top-K developer recommendations (optional skill/name search) |
 | POST   | `/team-projects`                  | Yes  | Create a team project                |
-| GET    | `/team-projects`                  | No   | Discover teams (paginated, `college`/`q` filters) |
+| GET    | `/team-projects`                  | No*  | Discover teams — filters: `q`, `college`, `kind` (project/hackathon), `category`, `location`, `work_mode` (remote/hybrid/onsite), `hackathon`, `tech[]`, `match_my_stack`, `open_only`; `sort` (newest/relevance/tech_match); `match_coverage` included when authenticated |
+| GET    | `/team-projects/me/teams`         | Yes  | Teams I joined (not created)         |
 | GET    | `/team-projects/{id}`             | No*  | Team detail (*viewer flags when authenticated) |
 | PUT/DELETE | `/team-projects/{id}`         | Yes  | Update/delete (creator only)         |
 | POST/DELETE | `/team-projects/{id}/skills[/{skill_id}]` | Yes | Manage required skills (creator) |
@@ -370,13 +377,17 @@ to page older history. Live updates are poll-based (8s).
 | POST | `/chat/requests/{id}/accept` / `/reject` | Respond (invited user only) |
 | GET/POST | `/chat/conversations/{id}/messages` | Thread (accepted participants only) |
 
-Team polls (members only, same 2-member unlock):
+Team polls (members only, same 2-member unlock; creators can restrict poll
+creation to themselves in Team settings):
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET/POST | `/team-projects/{id}/polls` | List / create (`question` + 2–6 options) |
-| POST | `/team-projects/{id}/polls/{poll_id}/vote` | Vote (changeable until closed) |
+| GET/POST | `/team-projects/{id}/polls` | List / create (`question` + 2–6 options + `allow_multiple`) |
+| POST | `/team-projects/{id}/polls/{poll_id}/vote` | Vote — single-choice replaces, multi-choice toggles |
 | POST | `/team-projects/{id}/polls/{poll_id}/close` | Close (team or poll creator) |
+
+Join/leave/remove posts a **DevMatch system message** into the team chat,
+so the roster always knows who came and went.
 
 ## Colleges & branches
 

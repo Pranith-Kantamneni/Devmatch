@@ -76,8 +76,10 @@ class TestLogin:
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
     def test_login_invalid_email_format(self, client):
+        # Identifiers accept usernames too, so a malformed email is simply
+        # unknown credentials — not a validation error.
         response = login_user(client, "not-an-email", "password123")
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
     def test_login_wrong_password_does_not_leak_user(self, client):
         register_user(client, "alice", "alice@example.com", "password123")

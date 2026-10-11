@@ -3,27 +3,37 @@ import { useEffect, useRef } from 'react'
 
 export default function Modal({ open, onClose, title, children, footer }) {
   const dialogRef = useRef(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const wasOpen = useRef(open)
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      wasOpen.current = false
+      return
+    }
     const handleKey = (e) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') onCloseRef.current()
     }
     window.addEventListener('keydown', handleKey)
     const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    // Move focus into the dialog for keyboard users.
-    dialogRef.current?.querySelector('button, input, select, textarea, [tabindex]')?.focus?.()
+    // Move focus into the dialog exactly once per opening — never steal it
+    // back on unrelated parent re-renders (polling, refreshes).
+    if (!wasOpen.current) {
+      wasOpen.current = true
+      dialogRef.current?.querySelector('button, input, select, textarea, [tabindex]')?.focus?.()
+    }
     return () => {
       window.removeEventListener('keydown', handleKey)
       document.body.style.overflow = prevOverflow
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={() => onCloseRef.current()}>
       <div
         ref={dialogRef}
         className="modal"
@@ -34,7 +44,7 @@ export default function Modal({ open, onClose, title, children, footer }) {
       >
         <div className="modal-header">
           <h2 className="modal-title">{title}</h2>
-          <button className="modal-close" onClick={onClose} aria-label="Close dialog">
+          <button className="modal-close" onClick={() => onCloseRef.current()} aria-label="Close dialog">
             <X size={18} />
           </button>
         </div>

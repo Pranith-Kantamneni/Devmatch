@@ -24,9 +24,9 @@ export default function Login() {
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
-    const trimmedEmail = email.trim()
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
-      setError('Enter a valid email address')
+    const identifier = email.trim()
+    if (!identifier) {
+      setError('Enter your email or username')
       return
     }
     if (!password) {
@@ -35,7 +35,7 @@ export default function Login() {
     }
     setLoading(true)
     try {
-      await login(trimmedEmail, password)
+      await login(identifier, password)
       toast('Welcome back')
       navigate(from, { replace: true })
     } catch (err) {
@@ -94,14 +94,14 @@ export default function Login() {
 
           <form onSubmit={handleSubmit} className="auth-form">
             <Input
-              label="Email"
+              label="Email or username"
               name="email"
-              type="email"
-              placeholder="you@example.com"
+              type="text"
+              placeholder="you@example.com or your username"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              autoComplete="email"
+              autoComplete="username"
               autoFocus
             />
             <Input

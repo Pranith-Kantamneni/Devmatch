@@ -631,19 +631,33 @@ function ProjectModal({ open, onClose, onAdded }) {
   const [description, setDescription] = useState('')
   const [url, setUrl] = useState('')
   const [skillNames, setSkillNames] = useState('')
+  const [addToSkills, setAddToSkills] = useState(true)
   const [saving, setSaving] = useState(false)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setSaving(true)
     try {
+      const skills = skillNames.split(',').map((s) => s.trim()).filter(Boolean)
       await api.addProject({
         title,
         description: description || null,
         url: url || null,
-        skill_names: skillNames.split(',').map((s) => s.trim()).filter(Boolean),
+        skill_names: skills,
       })
-      toast('Project added')
+      if (addToSkills) {
+        // Mirror project tech onto the user's own skill list (skip dupes).
+        for (const name of skills) {
+          try {
+            await api.addSkill({ name, category: 'other', proficiency: 3, years_experience: 1 })
+          } catch (err) {
+            if (err.status !== 409) throw err
+          }
+        }
+        toast('Project added — tech added to your skills')
+      } else {
+        toast('Project added')
+      }
       setTitle(''); setDescription(''); setUrl(''); setSkillNames('')
       onAdded()
     } catch (err) {
@@ -676,6 +690,13 @@ function ProjectModal({ open, onClose, onAdded }) {
           placeholder="e.g. Python, FastAPI, PostgreSQL"
           hint="These become part of your matching profile"
         />
+        <label className="toggle-row">
+          <input type="checkbox" checked={addToSkills} onChange={(e) => setAddToSkills(e.target.checked)} />
+          <span className="toggle-label">
+            <span className="toggle-title">Also add these to my skills</span>
+            <span className="toggle-desc">Keeps your skill list in sync with this project</span>
+          </span>
+        </label>
       </form>
     </Modal>
   )

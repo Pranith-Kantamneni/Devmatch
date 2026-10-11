@@ -13,6 +13,7 @@ import Textarea from '../components/ui/Textarea'
 import EmptyState from '../components/ui/EmptyState'
 import TeamFitPanel from '../components/TeamFitPanel'
 import TeamGapsPanel from '../components/TeamGapsPanel'
+import TeamSettingsCard from '../components/TeamSettingsCard'
 import SuggestedDevCard from '../components/SuggestedDevCard'
 import TeamChatCard from '../components/TeamChatCard'
 import ApplicationThread from '../components/ApplicationThread'
@@ -55,7 +56,9 @@ function SuggestToolbar({
       {options.length > 0 && (
         <div className="suggest-filter-chips" role="group" aria-label="Filter by skill">
           <button
+            type="button"
             className={`filter-chip ${!filterSkill ? 'active' : ''}`}
+            aria-pressed={!filterSkill}
             onClick={() => setFilterSkill('')}
           >
             All skills
@@ -63,7 +66,9 @@ function SuggestToolbar({
           {options.map((skill) => (
             <button
               key={skill}
+              type="button"
               className={`filter-chip ${filterSkill === skill ? 'active' : ''}`}
+              aria-pressed={filterSkill === skill}
               onClick={() => setFilterSkill(filterSkill === skill ? '' : skill)}
             >
               {skill}
@@ -318,6 +323,18 @@ export default function TeamDetail() {
                 <span className="profile-meta-item">
                   <Users size={14} /> {project.member_count}/{project.max_members} members
                 </span>
+                {project.kind === 'hackathon' && (
+                  <Badge variant="accent">Hackathon{project.hackathon_name ? ` · ${project.hackathon_name}` : ''}</Badge>
+                )}
+                {project.category && (
+                  <span className="profile-meta-item">{project.category}</span>
+                )}
+                {project.location && (
+                  <span className="profile-meta-item"><MapPin size={14} /> {project.location}{project.work_mode ? ` · ${project.work_mode}` : ''}</span>
+                )}
+                {!project.location && project.work_mode && (
+                  <span className="profile-meta-item">{project.work_mode}</span>
+                )}
                 {project.college && (
                   <span className="profile-meta-item"><MapPin size={14} /> {project.college}</span>
                 )}
@@ -400,8 +417,12 @@ export default function TeamDetail() {
             </div>
             <p className="section-empty">
               Team chat (plus polls) unlocks as soon as your first teammate joins.
-              Invite developers from the suggestions below!
             </p>
+            <div className="empty-action" style={{ marginTop: 12 }}>
+              <Button size="sm" variant="secondary" onClick={() => suggestRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+                Find developers below
+              </Button>
+            </div>
           </Card>
         ) : null}
         {!project.is_member && !project.is_creator && project.application_id && (
@@ -455,6 +476,7 @@ export default function TeamDetail() {
         {project.is_creator && (
           <>
             <TeamGapsPanel projectId={id} onFindSkill={handleFindSkill} />
+            <TeamSettingsCard project={project} onSaved={load} />
             <div ref={suggestRef} className="scroll-anchor">
             <Card className="section-card">
               <div className="section-header">
@@ -462,7 +484,9 @@ export default function TeamDetail() {
                   <Sparkles size={18} className="section-icon" />
                   <h3 className="section-title">Suggested developers</h3>
                   {recommendations && (
-                    <span className="section-count">{recommendations.recommendations.length}</span>
+                    <span className="section-count" aria-live="polite">
+                      {visibleRecs.length} of {recommendations.recommendations.length}
+                    </span>
                   )}
                 </div>
               </div>

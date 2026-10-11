@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Index, String, func
+from sqlalchemy import Boolean, ForeignKey, Index, String, false as sa_false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.models.base import Base
@@ -25,6 +25,9 @@ class TeamPoll(Base):
 
     question: Mapped[str] = mapped_column(String(280), nullable=False)
     is_closed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    allow_multiple: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sa_false()
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), nullable=False
@@ -53,7 +56,7 @@ class TeamPollOption(Base):
 class TeamPollVote(Base):
     __tablename__ = "team_poll_votes"
     __table_args__ = (
-        Index("uq_poll_votes_poll_voter", "poll_id", "voter_id", unique=True),
+        Index("uq_poll_votes_poll_option_voter", "poll_id", "option_id", "voter_id", unique=True),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

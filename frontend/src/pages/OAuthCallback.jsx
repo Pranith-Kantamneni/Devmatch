@@ -35,7 +35,7 @@ export default function OAuthCallback() {
         const from = sessionStorage.getItem('devmatch_oauth_from') || '/home'
         sessionStorage.removeItem('devmatch_oauth_provider')
         sessionStorage.removeItem('devmatch_oauth_from')
-        await loginWithToken(res.access_token)
+        await loginWithToken(res)
         if (!cancelled) {
           toast('Welcome to DevMatch')
           navigate(from, { replace: true })

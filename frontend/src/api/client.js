@@ -50,6 +50,8 @@ function buildError(data, status) {
 }
 
 let authToken = localStorage.getItem('devmatch_token') || null
+let refreshToken = localStorage.getItem('devmatch_refresh') || null
+let refreshPromise = null
 
 export function setToken(token) {
   authToken = token
@@ -60,16 +62,70 @@ export function setToken(token) {
   }
 }
 
+export function setRefreshToken(token) {
+  refreshToken = token
+  if (token) {
+    localStorage.setItem('devmatch_refresh', token)
+  } else {
+    localStorage.removeItem('devmatch_refresh')
+  }
+}
+
+export function setTokens({ access_token, refresh_token }) {
+  if (access_token) setToken(access_token)
+  if (refresh_token !== undefined) setRefreshToken(refresh_token)
+}
+
+export function clearTokens() {
+  setToken(null)
+  setRefreshToken(null)
+}
+
 export function getToken() {
   return authToken
 }
 
-async function request(path, { method = 'GET', body, params, timeoutMs = 30000 } = {}) {
+function unauthorized() {
+  clearTokens()
+  window.dispatchEvent(new Event('devmatch:unauthorized'))
+}
+
+/** Single-flight refresh: concurrent 401s share one rotation call. */
+async function tryRefresh() {
+  if (!refreshToken) return false
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      try {
+        const url = new URL(`${API_BASE}/auth/refresh`, window.location.origin)
+        const response = await fetch(url.pathname, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        })
+        const data = await parseJsonSafe(response)
+        if (!response.ok || !data?.access_token) return false
+        setTokens(data)
+        return true
+      } catch {
+        return false
+      } finally {
+        refreshPromise = null
+      }
+    })()
+  }
+  return refreshPromise
+}
+
+async function request(path, { method = 'GET', body, params, timeoutMs = 30000, _retried = false } = {}) {
   const url = new URL(API_BASE + path, window.location.origin)
   if (params) {
     Object.entries(params).forEach(([key, value]) => {
       if (value !== undefined && value !== null && value !== '') {
-        url.searchParams.set(key, value)
+        if (Array.isArray(value)) {
+          value.forEach((v) => url.searchParams.append(key, v))
+        } else {
+          url.searchParams.set(key, value)
+        }
       }
     })
   }
@@ -109,9 +165,16 @@ async function request(path, { method = 'GET', body, params, timeoutMs = 30000 }
   const data = await parseJsonSafe(response)
 
   if (!response.ok) {
+    // Expired access token? Rotate silently once, then retry the request.
+    // Auth endpoints themselves never retry (avoid login loops).
+    if (response.status === 401 && !path.startsWith('/auth/') && !_retried) {
+      const ok = await tryRefresh()
+      if (ok) {
+        return request(path, { method, body, params, timeoutMs, _retried: true })
+      }
+    }
     if (response.status === 401) {
-      setToken(null)
-      window.dispatchEvent(new Event('devmatch:unauthorized'))
+      unauthorized()
     }
     throw buildError(data, response.status)
   }
@@ -122,6 +185,8 @@ async function request(path, { method = 'GET', body, params, timeoutMs = 30000 }
 export const api = {
   register: (payload) => request('/auth/register', { method: 'POST', body: payload }),
   login: (payload) => request('/auth/login', { method: 'POST', body: payload }),
+  refresh: (payload) => request('/auth/refresh', { method: 'POST', body: payload }),
+  logout: (payload) => request('/auth/logout', { method: 'POST', body: payload }),
 
   getOAuthProviders: () => request('/auth/oauth/providers'),
   getOAuthLoginUrl: (provider) => request(`/auth/oauth/${provider}/login`),
@@ -144,6 +209,7 @@ export const api = {
   getRecommendations: (params) => request('/recommendations', { params }),
 
   listTeamProjects: (params) => request('/team-projects', { params }),
+  listJoinedTeams: () => request('/team-projects/me/teams'),
   getTeamProject: (id) => request(`/team-projects/${id}`),
   createTeamProject: (payload) => request('/team-projects', { method: 'POST', body: payload }),
   updateTeamProject: (id, payload) => request(`/team-projects/${id}`, { method: 'PUT', body: payload }),
@@ -221,8 +287,10 @@ export const api = {
 
     if (!response.ok) {
       if (response.status === 401) {
-        setToken(null)
-        window.dispatchEvent(new Event('devmatch:unauthorized'))
+        // Multipart uploads aren't retried automatically; rotate the
+        // session so the user's next attempt still works.
+        const ok = await tryRefresh()
+        if (!ok) unauthorized()
       }
       throw buildError(data, response.status)
     }

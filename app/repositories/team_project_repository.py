@@ -46,26 +46,45 @@ class TeamProjectRepository:
         )
 
     def list_projects(
-        self, skip: int = 0, limit: int = 20, college: str | None = None, q: str | None = None
+        self,
+        skip: int = 0,
+        limit: int = 20,
+        college: str | None = None,
+        q: str | None = None,
+        kind: str | None = None,
+        category: str | None = None,
+        location: str | None = None,
+        work_mode: str | None = None,
+        hackathon: str | None = None,
     ) -> list[TeamProject]:
         query = self.db.query(TeamProject).order_by(TeamProject.created_at.desc())
-        if college and college.strip():
-            query = query.filter(TeamProject.college.ilike(college.strip()))
-        if q and q.strip():
-            escaped = (
-                q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            )
-            like = f"%{escaped}%"
-            query = query.filter(
-                (TeamProject.title.ilike(like, escape="\\"))
-                | (TeamProject.description.ilike(like, escape="\\"))
-            )
+        query = self._apply_discover_filters(
+            query, college, q, kind, category, location, work_mode, hackathon
+        )
         return query.offset(skip).limit(limit).all()
 
-    def count_projects(
-        self, college: str | None = None, q: str | None = None
-    ) -> int:
-        query = self.db.query(TeamProject)
+    def list_projects_filtered(
+        self,
+        college: str | None = None,
+        q: str | None = None,
+        kind: str | None = None,
+        category: str | None = None,
+        location: str | None = None,
+        work_mode: str | None = None,
+        hackathon: str | None = None,
+        cap: int = 500,
+    ) -> list[TeamProject]:
+        """Unpaginated candidate set for Python-side tech/sort filtering."""
+        query = self.db.query(TeamProject).order_by(TeamProject.created_at.desc())
+        query = self._apply_discover_filters(
+            query, college, q, kind, category, location, work_mode, hackathon
+        )
+        return query.limit(cap).all()
+
+    @staticmethod
+    def _apply_discover_filters(
+        query, college, q, kind, category, location, work_mode, hackathon
+    ):
         if college and college.strip():
             query = query.filter(TeamProject.college.ilike(college.strip()))
         if q and q.strip():
@@ -77,6 +96,48 @@ class TeamProjectRepository:
                 (TeamProject.title.ilike(like, escape="\\"))
                 | (TeamProject.description.ilike(like, escape="\\"))
             )
+        if kind and kind.strip():
+            query = query.filter(TeamProject.kind == kind.strip().lower())
+        if category and category.strip():
+            query = query.filter(TeamProject.category.ilike(category.strip()))
+        if location and location.strip():
+            escaped = (
+                location.strip()
+                .replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            query = query.filter(
+                TeamProject.location.ilike(f"%{escaped}%", escape="\\")
+            )
+        if work_mode and work_mode.strip():
+            query = query.filter(TeamProject.work_mode == work_mode.strip().lower())
+        if hackathon and hackathon.strip():
+            escaped = (
+                hackathon.strip()
+                .replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            query = query.filter(
+                TeamProject.hackathon_name.ilike(f"%{escaped}%", escape="\\")
+            )
+        return query
+
+    def count_projects(
+        self,
+        college: str | None = None,
+        q: str | None = None,
+        kind: str | None = None,
+        category: str | None = None,
+        location: str | None = None,
+        work_mode: str | None = None,
+        hackathon: str | None = None,
+    ) -> int:
+        query = self.db.query(TeamProject)
+        query = self._apply_discover_filters(
+            query, college, q, kind, category, location, work_mode, hackathon
+        )
         return query.count()
 
     def update(self, project: TeamProject, data: dict) -> TeamProject:
@@ -397,6 +458,7 @@ class TeamProjectRepository:
         creator_username: str,
         question: str,
         options: list[str],
+        allow_multiple: bool = False,
     ) -> TeamPoll:
         poll = TeamPoll(
             team_project_id=team_project_id,
@@ -404,6 +466,7 @@ class TeamProjectRepository:
             creator_username=creator_username,
             question=question,
             is_closed=False,
+            allow_multiple=allow_multiple,
         )
         self.db.add(poll)
         self.db.flush()
@@ -454,16 +517,51 @@ class TeamProjectRepository:
         )
         return row[0] if row else None
 
+    def voter_options(self, poll_id: int, voter_id: int) -> list[int]:
+        rows = (
+            self.db.query(TeamPollVote.option_id)
+            .filter(
+                TeamPollVote.poll_id == poll_id,
+                TeamPollVote.voter_id == voter_id,
+            )
+            .all()
+        )
+        return [row[0] for row in rows]
+
+    def remove_vote(self, poll_id: int, option_id: int, voter_id: int) -> None:
+        self.db.query(TeamPollVote).filter(
+            TeamPollVote.poll_id == poll_id,
+            TeamPollVote.option_id == option_id,
+            TeamPollVote.voter_id == voter_id,
+        ).delete()
+        self.db.flush()
+
     def cast_vote(self, poll_id: int, option_id: int, voter_id: int) -> None:
-        # One vote per poll — changing your vote replaces it.
+        # Single insert (flushed, not committed — the service commits once).
+        # Concurrent duplicates hit the unique index; callers treat that as
+        # idempotent success.
+        exists = (
+            self.db.query(TeamPollVote)
+            .filter(
+                TeamPollVote.poll_id == poll_id,
+                TeamPollVote.option_id == option_id,
+                TeamPollVote.voter_id == voter_id,
+            )
+            .first()
+        )
+        if exists is not None:
+            return
+        self.db.add(
+            TeamPollVote(poll_id=poll_id, option_id=option_id, voter_id=voter_id)
+        )
+        self.db.flush()
+
+    def clear_votes(self, poll_id: int, voter_id: int) -> None:
         self.db.query(TeamPollVote).filter(
             TeamPollVote.poll_id == poll_id,
             TeamPollVote.voter_id == voter_id,
         ).delete()
-        self.db.add(
-            TeamPollVote(poll_id=poll_id, option_id=option_id, voter_id=voter_id)
-        )
-        self.db.commit()
+        self.db.flush()
 
     def close_poll(self, poll: TeamPoll) -> TeamPoll:
         poll.is_closed = True

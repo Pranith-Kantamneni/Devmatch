@@ -17,36 +17,53 @@ const QUICK_REPLIES = [
   'Share your availability for the hackathon',
 ]
 
-function PollCard({ poll, canClose, onVote, onClose, voting }) {
+function PollCard({ poll, canClose, onVote, onClose, voting, closing }) {
+  const myVotes = poll.my_option_ids?.length ? poll.my_option_ids : (poll.my_option_id ? [poll.my_option_id] : [])
   return (
     <div className="poll-card">
-      <div className="poll-question">{poll.question}</div>
+      <div className="poll-question-row">
+        <span className="poll-badge">Poll{poll.allow_multiple ? ' · multi' : ''}</span>
+        <span className="poll-question">{poll.question}</span>
+      </div>
       <div className="poll-meta">
-        {poll.total_votes} vote{poll.total_votes === 1 ? '' : 's'} · by {poll.creator_username}
+        {poll.total_votes} vote{poll.total_votes === 1 ? '' : 's'} · by {poll.creator_username || 'Someone'}
         {poll.is_closed && <span className="poll-closed">Closed</span>}
+        {!poll.is_closed && poll.allow_multiple && <span className="poll-hint">Pick any number</span>}
       </div>
       <div className="poll-options">
-        {poll.options.map((opt) => {
+        {(poll.options || []).length === 0 && (
+          <p className="section-empty">No options on this poll.</p>
+        )}
+        {(poll.options || []).map((opt) => {
           const pct = poll.total_votes > 0 ? Math.round((opt.votes / poll.total_votes) * 100) : 0
-          const mine = poll.my_option_id === opt.id
+          const mine = myVotes.includes(opt.id)
+          const busy = voting === opt.id
           return (
             <button
               key={opt.id}
+              type="button"
               className={`poll-option ${mine ? 'mine' : ''}`}
-              disabled={poll.is_closed || voting}
+              disabled={poll.is_closed || voting !== false}
+              aria-pressed={mine}
+              aria-label={`Vote for ${opt.text}${mine ? ' (your vote)' : ''}`}
               onClick={() => onVote(poll.id, opt.id)}
               title={poll.is_closed ? 'Poll closed' : `Vote for ${opt.text}`}
             >
               <span className="poll-option-fill" style={{ width: `${pct}%` }} />
-              <span className="poll-option-text">{opt.text}</span>
+              <span className="poll-option-text">{busy ? 'Saving…' : opt.text}</span>
               <span className="poll-option-pct">{pct}%</span>
             </button>
           )
         })}
       </div>
       {canClose && !poll.is_closed && (
-        <button className="poll-close" onClick={() => onClose(poll.id)}>
-          Close poll
+        <button
+          type="button"
+          className="poll-close"
+          disabled={closing}
+          onClick={() => onClose(poll.id)}
+        >
+          {closing ? 'Closing…' : 'Close poll'}
         </button>
       )}
     </div>
@@ -57,11 +74,13 @@ function CreatePollModal({ open, onClose, onCreated, projectId }) {
   const { toast } = useToast()
   const [question, setQuestion] = useState('')
   const [options, setOptions] = useState(['', ''])
+  const [allowMultiple, setAllowMultiple] = useState(false)
   const [saving, setSaving] = useState(false)
 
   const reset = () => {
     setQuestion('')
     setOptions(['', ''])
+    setAllowMultiple(false)
   }
 
   const submit = async (e) => {
@@ -77,7 +96,7 @@ function CreatePollModal({ open, onClose, onCreated, projectId }) {
     }
     setSaving(true)
     try {
-      await api.createPoll(projectId, { question: question.trim(), options: cleaned })
+      await api.createPoll(projectId, { question: question.trim(), options: cleaned, allow_multiple: allowMultiple })
       toast('Poll created')
       reset()
       onClose()
@@ -97,11 +116,11 @@ function CreatePollModal({ open, onClose, onCreated, projectId }) {
       footer={
         <>
           <Button variant="ghost" disabled={saving} onClick={() => { reset(); onClose() }}>Cancel</Button>
-          <Button onClick={submit} loading={saving}>Create poll</Button>
+          <Button type="submit" form="poll-form" loading={saving}>Create poll</Button>
         </>
       }
     >
-      <div className="modal-form">
+      <form id="poll-form" onSubmit={submit} className="modal-form">
         <Input
           label="Question"
           value={question}
@@ -118,6 +137,7 @@ function CreatePollModal({ open, onClose, onCreated, projectId }) {
                 setOptions((prev) => prev.map((o, idx) => (idx === i ? e.target.value : o)))
               }
               placeholder={`Option ${i + 1}`}
+              aria-label={`Poll option ${i + 1}`}
               maxLength={120}
             />
             {options.length > 2 && (
@@ -142,7 +162,14 @@ function CreatePollModal({ open, onClose, onCreated, projectId }) {
             <Plus size={14} /> Add option
           </Button>
         )}
-      </div>
+        <label className="toggle-row">
+          <input type="checkbox" checked={allowMultiple} onChange={(e) => setAllowMultiple(e.target.checked)} />
+          <span className="toggle-label">
+            <span className="toggle-title">Allow multiple selections</span>
+            <span className="toggle-desc">Voters can pick more than one option</span>
+          </span>
+        </label>
+      </form>
     </Modal>
   )
 }
@@ -158,6 +185,7 @@ export default function TeamChatCard({ projectId, currentUsername, currentUserId
   const [polls, setPolls] = useState([])
   const [pollsLoading, setPollsLoading] = useState(false)
   const [voting, setVoting] = useState(false)
+  const [closing, setClosing] = useState(false)
   const [pollModal, setPollModal] = useState(false)
 
   const loadLatest = useCallback(async () => {
@@ -238,7 +266,7 @@ export default function TeamChatCard({ projectId, currentUsername, currentUserId
   }
 
   const vote = async (pollId, optionId) => {
-    setVoting(true)
+    setVoting(optionId)
     try {
       const updated = await api.votePoll(projectId, pollId, { option_id: optionId })
       setPolls((prev) => prev.map((p) => (p.id === pollId ? updated : p)))
@@ -250,12 +278,16 @@ export default function TeamChatCard({ projectId, currentUsername, currentUserId
   }
 
   const close = async (pollId) => {
+    if (closing) return
+    setClosing(true)
     try {
       const updated = await api.closePoll(projectId, pollId)
       setPolls((prev) => prev.map((p) => (p.id === pollId ? updated : p)))
       toast('Poll closed')
     } catch (err) {
       toast(err.message, 'error')
+    } finally {
+      setClosing(false)
     }
   }
 
@@ -312,6 +344,7 @@ export default function TeamChatCard({ projectId, currentUsername, currentUserId
               key={poll.id}
               poll={poll}
               voting={voting}
+              closing={closing}
               canClose={isCreator || poll.creator_id === currentUserId}
               onVote={vote}
               onClose={close}

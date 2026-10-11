@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react'
-import { api, setToken, getToken } from '../api/client'
+import { api, setTokens, clearTokens, getToken } from '../api/client'
 
 const AuthContext = createContext(null)
 
@@ -13,6 +13,7 @@ export function AuthProvider({ children }) {
       setLoading(false)
       return
     }
+    // getMe() auto-rotates an expired access token via the refresh flow.
     api
       .getMe()
       .then((me) => {
@@ -20,10 +21,10 @@ export function AuthProvider({ children }) {
         setAuthError(null)
       })
       .catch((err) => {
-        // Only a 401 means the token is bad. Network/500 errors must not
+        // Only a 401 means the session is dead. Network/500 errors must not
         // silently log the user out — surface them instead.
         if (err?.status === 401) {
-          setToken(null)
+          clearTokens()
           setUser(null)
         } else {
           setAuthError(err?.message || 'Could not reach the server')
@@ -38,10 +39,10 @@ export function AuthProvider({ children }) {
     return () => window.removeEventListener('devmatch:unauthorized', handleUnauthorized)
   }, [])
 
-  const login = useCallback(async (email, password) => {
+  const login = useCallback(async (identifier, password) => {
     try {
-      const res = await api.login({ email, password })
-      setToken(res.access_token)
+      const res = await api.login({ email: identifier, password })
+      setTokens(res)
       try {
         const me = await api.getMe()
         setUser(me)
@@ -50,7 +51,7 @@ export function AuthProvider({ children }) {
       } catch (err) {
         // Token is valid but profile fetch failed — don't leave a half-auth
         // state; roll back so the user can retry cleanly.
-        setToken(null)
+        clearTokens()
         setUser(null)
         throw err
       }
@@ -66,23 +67,28 @@ export function AuthProvider({ children }) {
   }, [login])
 
   // Used after OAuth callbacks: the backend already verified the identity.
-  const loginWithToken = useCallback(async (accessToken) => {
-    setToken(accessToken)
+  const loginWithToken = useCallback(async (tokens) => {
+    setTokens(tokens)
     try {
       const me = await api.getMe()
       setUser(me)
       setAuthError(null)
       return me
     } catch (err) {
-      setToken(null)
+      clearTokens()
       setUser(null)
       throw err
     }
   }, [])
 
   const logout = useCallback(() => {
-    setToken(null)
-    setUser(null)
+    try {
+      const refresh = localStorage.getItem('devmatch_refresh')
+      if (refresh) api.logout({ refresh_token: refresh }).catch(() => {})
+    } finally {
+      clearTokens()
+      setUser(null)
+    }
   }, [])
 
   return (

@@ -258,7 +258,7 @@ class TestApplications:
         response = client.post(
             f"/api/v1/team-projects/{project_id}/apply", json={}, headers=h3
         )
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == status.HTTP_409_CONFLICT
 
     def test_apply_college_mismatch(self, client):
         h1 = make_user(client, "alice", "alice@example.com", college="MIT")
@@ -776,7 +776,9 @@ class TestTeamChat:
         messages = client.get(
             f"/api/v1/team-projects/{project_id}/messages", headers=h1
         ).json()
-        assert [m["body"] for m in messages] == ["Hello team!"]
+        bodies = [m["body"] for m in messages]
+        assert bodies[-1] == "Hello team!"
+        assert any("joined the team" in b for b in bodies)
 
     def test_non_member_forbidden(self, client):
         _, _, h3, project_id = self._setup(client)
@@ -815,7 +817,9 @@ class TestTeamChat:
             params={"limit": 10, "before_id": latest[0]["id"]},
             headers=h1,
         ).json()
-        assert [m["body"] for m in older] == ["msg 0", "msg 1", "msg 2"]
+        bodies = [m["body"] for m in older]
+        assert bodies[-3:] == ["msg 0", "msg 1", "msg 2"]
+        assert any("joined the team" in b for b in bodies)
 
     def test_application_chat_permissions(self, client):
         from test_team_projects import make_project, make_user

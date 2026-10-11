@@ -40,6 +40,21 @@ class TeamProject(Base):
 
     require_same_college: Mapped[bool] = mapped_column(default=False, nullable=False)
 
+    kind: Mapped[str] = mapped_column(
+        sa.String(20), nullable=False, default="project", server_default="project"
+    )
+    category: Mapped[str | None] = mapped_column(sa.String(60))
+    hackathon_name: Mapped[str | None] = mapped_column(sa.String(200))
+    location: Mapped[str | None] = mapped_column(sa.String(120))
+    work_mode: Mapped[str | None] = mapped_column(sa.String(20))
+
+    allow_member_polls: Mapped[bool] = mapped_column(
+        default=True, nullable=False, server_default=sa.true()
+    )
+    allow_member_invites: Mapped[bool] = mapped_column(
+        default=False, nullable=False, server_default=sa.false()
+    )
+
     embedding: Mapped[list[float] | None] = mapped_column(sa.JSON)
 
     embedding_updated_at: Mapped[datetime | None] = mapped_column(sa.DateTime)

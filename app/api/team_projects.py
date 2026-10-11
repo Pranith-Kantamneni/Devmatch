@@ -63,12 +63,48 @@ def list_team_projects(
     limit: int = Query(default=20, ge=1, le=100),
     college: str | None = Query(default=None),
     q: str | None = Query(default=None),
+    kind: str | None = Query(default=None, pattern="^(project|hackathon)$"),
+    category: str | None = Query(default=None, max_length=60),
+    location: str | None = Query(default=None, max_length=120),
+    work_mode: str | None = Query(default=None, pattern="^(remote|hybrid|onsite)$"),
+    hackathon: str | None = Query(default=None, max_length=200),
+    tech: list[str] | None = Query(default=None),
+    match_my_stack: bool = Query(default=False),
+    open_only: bool = Query(default=False),
+    sort: str = Query(default="newest", pattern="^(newest|relevance|tech_match)$"),
+    current_user: User | None = Depends(get_optional_current_user),
     service: TeamProjectService = Depends(get_team_service),
 ):
-    response.headers["X-Total-Count"] = str(
-        service.team_repo.count_projects(college=college, q=q)
+    items, total = service.list_projects(
+        skip=skip,
+        limit=limit,
+        college=college,
+        q=q,
+        kind=kind,
+        category=category,
+        location=location,
+        work_mode=work_mode,
+        hackathon=hackathon,
+        tech=tech,
+        match_my_stack=match_my_stack,
+        open_only=open_only,
+        sort=sort,
+        viewer_id=current_user.id if current_user else None,
     )
-    return service.list_projects(skip=skip, limit=limit, college=college, q=q)
+    response.headers["X-Total-Count"] = str(total)
+    return items
+
+
+@router.get(
+    "/me/teams",
+    response_model=list[TeamProjectResponse],
+    summary="Teams I joined (not created)",
+)
+def list_joined_teams(
+    current_user: User = Depends(get_current_user),
+    service: TeamProjectService = Depends(get_team_service),
+):
+    return service.list_joined(current_user.id)
 
 
 @router.get(

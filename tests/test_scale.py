@@ -22,7 +22,8 @@ class TestRateLimiting:
             json={"email": "nobody@example.com", "password": "password123"},
         )
         assert limited.status_code == 429
-        assert limited.headers.get("Retry-After") == "60"
+        retry_after = int(limited.headers.get("Retry-After"))
+        assert 1 <= retry_after <= 60
 
     def test_health_never_limited(self, client, monkeypatch):
         from app.core.config import get_settings

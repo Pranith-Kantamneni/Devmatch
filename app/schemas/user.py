@@ -14,13 +14,19 @@ class UserCreate(BaseModel):
 
 
 class UserLogin(BaseModel):
-    email: EmailStr
+    # Accepts either the email address or the username.
+    email: str = Field(min_length=1, max_length=255)
     password: str
 
 
 class Token(BaseModel):
     access_token: str
+    refresh_token: str | None = None
     token_type: str = "bearer"
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
 
 
 class UserResponse(BaseModel):

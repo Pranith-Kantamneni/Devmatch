@@ -25,16 +25,19 @@ function MessageThread({ conversation, currentUsername, onRead }) {
   const { toast } = useToast()
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [sending, setSending] = useState(false)
   const [hasMore, setHasMore] = useState(false)
 
   const loadLatest = useCallback(async () => {
+    setLoadError('')
     try {
       const data = await api.listDMMessages(conversation.id, { limit: 50 })
       setMessages(data)
       setHasMore(data.length >= 50)
       onRead(conversation.id, data[data.length - 1]?.id)
     } catch (err) {
+      setLoadError(err.message || 'Could not load messages')
       toast(err.message, 'error')
     } finally {
       setLoading(false)
@@ -45,8 +48,7 @@ function MessageThread({ conversation, currentUsername, onRead }) {
     setMessages([])
     setLoading(true)
     loadLatest()
-    const timer = setInterval(() => {
-      if (document.hidden) return
+    const poll = () => {
       api
         .listDMMessages(conversation.id, { limit: 50 })
         .then((data) => {
@@ -55,8 +57,19 @@ function MessageThread({ conversation, currentUsername, onRead }) {
           onRead(conversation.id, data[data.length - 1]?.id)
         })
         .catch(() => {})
+    }
+    const timer = setInterval(() => {
+      if (document.hidden) return
+      poll()
     }, POLL_MS)
-    return () => clearInterval(timer)
+    const onVisible = () => {
+      if (!document.hidden) poll()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [conversation.id, loadLatest, onRead])
 
   const loadOlder = async () => {
@@ -88,16 +101,24 @@ function MessageThread({ conversation, currentUsername, onRead }) {
   }
 
   return (
-    <ChatBox
-      messages={messages}
-      loading={loading}
-      currentUsername={currentUsername}
-      onSend={send}
-      sending={sending}
-      onLoadOlder={loadOlder}
-      canLoadOlder={hasMore}
-      placeholder={`Message ${conversation.other_user.username}…`}
-    />
+    <>
+      {loadError && messages.length === 0 && !loading && (
+        <div className="thread-error">
+          <span>{loadError}</span>
+          <button className="link-btn" onClick={loadLatest}>Retry</button>
+        </div>
+      )}
+      <ChatBox
+        messages={messages}
+        loading={loading}
+        currentUsername={currentUsername}
+        onSend={send}
+        sending={sending}
+        onLoadOlder={loadOlder}
+        canLoadOlder={hasMore}
+        placeholder={`Message ${conversation.other_user?.username || 'them'}…`}
+      />
+    </>
   )
 }
 
@@ -143,6 +164,12 @@ export default function Messages() {
   useEffect(() => {
     loadOverview()
   }, [loadOverview])
+
+  // Keep selection in sync with back/forward navigation + shared links.
+  useEffect(() => {
+    const q = searchParams.get('conversation')
+    setActiveId(q ? parseInt(q, 10) : null)
+  }, [searchParams])
 
   const conversations = overview?.conversations || []
   const incoming = overview?.incoming_requests || []

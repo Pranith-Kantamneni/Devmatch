@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -7,6 +9,9 @@ from pwdlib import PasswordHash
 from app.core.config import get_settings
 
 password_hash = PasswordHash.recommended()
+
+REFRESH_TOKEN_EXPIRE_DAYS = 30
+REFRESH_TOKEN_BYTES = 48
 
 
 def hash_password(password: str) -> str:
@@ -29,6 +34,23 @@ def create_access_token(user_id: int) -> str:
         settings.JWT_SECRET_KEY,
         algorithm=settings.JWT_ALGORITHM,
     )
+
+
+def create_refresh_token() -> tuple[str, str, datetime]:
+    """New opaque refresh token. Returns (plaintext, sha256 hash, expiry).
+
+    Expiry is naive UTC to match the DateTime column on every backend.
+    """
+    plaintext = secrets.token_urlsafe(REFRESH_TOKEN_BYTES)
+    digest = hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
+    expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
+        days=REFRESH_TOKEN_EXPIRE_DAYS
+    )
+    return plaintext, digest, expires_at
+
+
+def hash_refresh_token(plaintext: str) -> str:
+    return hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
 
 
 def _unauthorized(detail: str) -> HTTPException:

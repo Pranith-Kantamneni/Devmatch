@@ -14,6 +14,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.config import get_settings
 
+MAX_TRACKED_KEYS = 20000
+
 
 class InMemoryRateLimiter(BaseHTTPMiddleware):
     def __init__(self, app, enabled: bool = True):
@@ -28,7 +30,7 @@ class InMemoryRateLimiter(BaseHTTPMiddleware):
         if not self.enabled or not settings.RATE_LIMIT_ENABLED:
             return await call_next(request)
 
-        path = request.url.path
+        path = request.url.path.rstrip("/") or "/"
         if path in ("/health", "/readyz", "/docs", "/openapi.json", "/redoc"):
             return await call_next(request)
 
@@ -39,32 +41,38 @@ class InMemoryRateLimiter(BaseHTTPMiddleware):
             limit = settings.RATE_LIMIT_DEFAULT_PER_MINUTE
             bucket = "api"
 
-        client_ip = self._client_ip(request)
+        client_ip = self._client_ip(request, settings)
         window = int(time.time() // 60)
         key = (f"{bucket}:{client_ip}", window)
         self._hits[key] += 1
         self._sweep()
 
         if self._hits[key] > limit:
+            retry_after = max(1, 60 - int(time.time() % 60))
             return JSONResponse(
                 status_code=429,
                 content={"detail": "Rate limit exceeded. Try again later."},
-                headers={"Retry-After": "60"},
+                headers={"Retry-After": str(retry_after)},
             )
         return await call_next(request)
 
     @staticmethod
-    def _client_ip(request: Request) -> str:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+    def _client_ip(request: Request, settings) -> str:
+        # X-Forwarded-For is trivially spoofable: only trust it when running
+        # behind a known proxy (TRUST_PROXY=true on Render/Fly/Railway).
+        if getattr(settings, "TRUST_PROXY", False):
+            forwarded = request.headers.get("x-forwarded-for")
+            if forwarded:
+                first = forwarded.split(",")[0].strip()
+                if first:
+                    return first
         if request.client is not None:
             return request.client.host
         return "unknown"
 
     def _sweep(self) -> None:
         now = time.monotonic()
-        if now - self._last_sweep < 120:
+        if now - self._last_sweep < 120 and len(self._hits) < MAX_TRACKED_KEYS:
             return
         self._last_sweep = now
         current_window = int(time.time() // 60)

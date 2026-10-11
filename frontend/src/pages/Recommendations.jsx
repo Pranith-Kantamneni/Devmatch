@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { RefreshCw, Users, MapPin, Sparkles, ChevronRight, UserCheck } from 'lucide-react'
+import { RefreshCw, Users, MapPin, Sparkles, ChevronRight, UserCheck, Search } from 'lucide-react'
 import Card from '../components/ui/Card'
 import Button from '../components/ui/Button'
 import Badge from '../components/ui/Badge'
@@ -111,13 +111,17 @@ export default function Recommendations() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
+  const [search, setSearch] = useState('')
+  const [appliedSearch, setAppliedSearch] = useState('')
 
-  const load = useCallback(async (silent = false) => {
+  const load = useCallback(async (silent = false, query = appliedSearch) => {
     if (!silent) setLoading(true)
     else setRefreshing(true)
     setLoadError('')
     try {
-      const res = await api.getRecommendations({ limit: 20 })
+      const params = { limit: 20 }
+      if (query.trim()) params.q = query.trim()
+      const res = await api.getRecommendations(params)
       setData(res)
     } catch (err) {
       setLoadError(err.message || 'Could not load recommendations')
@@ -126,11 +130,16 @@ export default function Recommendations() {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [toast])
+  }, [toast, appliedSearch])
 
   useEffect(() => {
     load()
   }, [load])
+
+  useEffect(() => {
+    const timer = setTimeout(() => setAppliedSearch(search.trim()), 400)
+    return () => clearTimeout(timer)
+  }, [search])
 
   return (
     <div className="page">
@@ -141,9 +150,21 @@ export default function Recommendations() {
             Developers ranked by how well their skills complement yours
           </p>
         </div>
-        <Button variant="secondary" onClick={() => load(true)} loading={refreshing}>
-          <RefreshCw size={15} /> Refresh
-        </Button>
+        <div className="page-header-actions">
+          <div className="discover-search recs-search">
+            <Search size={15} className="discover-search-icon" />
+            <input
+              className="input"
+              placeholder="Search by skill, name…"
+              aria-label="Search teammates"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <Button variant="secondary" onClick={() => load(true)} loading={refreshing}>
+            <RefreshCw size={15} /> Refresh
+          </Button>
+        </div>
       </div>
 
       {loading ? (

@@ -19,6 +19,8 @@ export default function Register() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [showConfirm, setShowConfirm] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -123,7 +125,7 @@ export default function Register() {
             <Input
               label="Password"
               name="password"
-              type="password"
+              type={showPassword ? 'text' : 'password'}
               placeholder="At least 8 characters"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -132,16 +134,32 @@ export default function Register() {
               hint="Must be at least 8 characters"
               minLength={8}
             />
+            <label className="auth-show-password">
+              <input
+                type="checkbox"
+                checked={showPassword}
+                onChange={(e) => setShowPassword(e.target.checked)}
+              />
+              Show password
+            </label>
             <Input
               label="Confirm password"
               name="confirmPassword"
-              type="password"
+              type={showConfirm ? 'text' : 'password'}
               placeholder="Repeat your password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               required
               autoComplete="new-password"
             />
+            <label className="auth-show-password">
+              <input
+                type="checkbox"
+                checked={showConfirm}
+                onChange={(e) => setShowConfirm(e.target.checked)}
+              />
+              Show confirm password
+            </label>
             {error && <div className="auth-error" role="alert">{error}</div>}
             <Button type="submit" loading={loading} className="auth-submit">
               Create account <ArrowRight size={16} />

@@ -1,6 +1,6 @@
-import { NavLink, useNavigate } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { House, CircleUserRound, Users, UsersRound, LogOut, MessageCircle } from 'lucide-react'
+import { House, Users, UsersRound, LogOut, MessageCircle } from 'lucide-react'
 import Logo from './Logo'
 import ThemeToggle from './ThemeToggle'
 import Avatar from './ui/Avatar'
@@ -10,15 +10,19 @@ import { api } from '../api/client'
 export default function Navbar() {
   const { user, logout, isAuthenticated } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const [pendingChats, setPendingChats] = useState(0)
 
   useEffect(() => {
-    if (!isAuthenticated) return
+    if (!isAuthenticated) {
+      setPendingChats(0)
+      return
+    }
     api
       .chatOverview()
       .then((o) => setPendingChats((o.incoming_requests || []).length))
       .catch(() => {})
-  }, [isAuthenticated])
+  }, [isAuthenticated, location.pathname])
 
   const handleLogout = () => {
     logout()
@@ -38,10 +42,6 @@ export default function Navbar() {
             <House size={16} />
             <span>Home</span>
           </NavLink>
-          <NavLink to="/dashboard" aria-label="My Profile" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-            <CircleUserRound size={16} />
-            <span>My Profile</span>
-          </NavLink>
           <NavLink to="/teammates" aria-label="Find Teammates" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
             <Users size={16} />
             <span>Find Teammates</span>
@@ -58,7 +58,7 @@ export default function Navbar() {
         </nav>
 
         <div className="navbar-actions">
-          <div className="navbar-user">
+          <NavLink to="/dashboard" className="navbar-user" aria-label="Open my profile" title="My profile">
             {user ? (
               <>
                 <Avatar name={user.username || ''} size={32} />
@@ -70,7 +70,7 @@ export default function Navbar() {
                 <span className="skeleton" style={{ width: 70, height: 14 }} />
               </>
             )}
-          </div>
+          </NavLink>
           <button className="nav-logout" onClick={handleLogout} title="Log out" aria-label="Log out">
             <LogOut size={17} />
           </button>

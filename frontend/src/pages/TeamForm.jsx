@@ -10,6 +10,7 @@ import Badge from '../components/ui/Badge'
 import { api } from '../api/client'
 import { useToast } from '../context/ToastContext'
 import CollegeSelect from '../components/CollegeSelect'
+import { PROJECT_CATEGORIES } from '../utils/constants'
 
 const SKILL_CATEGORIES = [
   { value: 'language', label: 'Language' },
@@ -35,6 +36,11 @@ export default function TeamForm({ mode }) {
     college: '',
     college_id: null,
     require_same_college: false,
+    kind: 'project',
+    category: '',
+    hackathon_name: '',
+    location: '',
+    work_mode: '',
   })
   const [skillName, setSkillName] = useState('')
   const [skillCategory, setSkillCategory] = useState('language')
@@ -59,6 +65,11 @@ export default function TeamForm({ mode }) {
           college: p.college || '',
           college_id: p.college_id || null,
           require_same_college: p.require_same_college,
+          kind: p.kind || 'project',
+          category: p.category || '',
+          hackathon_name: p.hackathon_name || '',
+          location: p.location || '',
+          work_mode: p.work_mode || '',
         })
       })
       .catch((err) => {
@@ -120,6 +131,11 @@ export default function TeamForm({ mode }) {
         college: form.college.trim() || null,
         college_id: form.college_id || null,
         require_same_college: form.require_same_college,
+        kind: form.kind,
+        category: form.category || null,
+        hackathon_name: form.kind === 'hackathon' ? (form.hackathon_name.trim() || null) : null,
+        location: form.location.trim() || null,
+        work_mode: form.work_mode || null,
       }
       if (isEdit) {
         await api.updateTeamProject(id, payload)
@@ -168,8 +184,26 @@ export default function TeamForm({ mode }) {
               <h3 className="review-section-title">Basics</h3>
             </div>
             <div className="review-form">
+              <div className="team-kind-row" role="group" aria-label="Team type">
+                {[
+                  { value: 'project', label: 'Project team' },
+                  { value: 'hackathon', label: 'Hackathon team' },
+                ].map((k) => (
+                  <button
+                    key={k.value}
+                    type="button"
+                    className={`filter-chip ${form.kind === k.value ? 'active' : ''}`}
+                    onClick={() => setForm((f) => ({ ...f, kind: k.value }))}
+                  >
+                    {k.label}
+                  </button>
+                ))}
+              </div>
               <Input label="Team name" value={form.title} onChange={set('title')} placeholder="e.g. AI Builders Hackathon Team" required maxLength={200} />
               <Textarea label="Description" value={form.description} onChange={set('description')} placeholder="What will you build? What is the goal?" />
+              {form.kind === 'hackathon' && (
+                <Input label="Hackathon name" value={form.hackathon_name} onChange={set('hackathon_name')} placeholder="e.g. HackNight 2026" maxLength={200} />
+              )}
               <Input label="Poster / image URL (optional)" value={form.poster_url} onChange={set('poster_url')} placeholder="https://..." hint="Shown at the top of your team page" />
               {form.poster_url.trim() && /^https?:\/\/.+\..+/.test(form.poster_url.trim()) && (
                 <div className="poster-preview">
@@ -253,6 +287,21 @@ export default function TeamForm({ mode }) {
                 onChange={set('max_members')}
                 required
               />
+              <div className="review-form-row">
+                <Input label="Location (optional)" value={form.location} onChange={set('location')} placeholder="e.g. Chennai or Remote" maxLength={120} />
+                <Select label="Work mode" value={form.work_mode} onChange={set('work_mode')}>
+                  <option value="">Select mode</option>
+                  <option value="remote">Remote</option>
+                  <option value="hybrid">Hybrid</option>
+                  <option value="onsite">On-site</option>
+                </Select>
+              </div>
+              <Select label="Category" value={form.category} onChange={set('category')}>
+                <option value="">Select category</option>
+                {PROJECT_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </Select>
               <CollegeSelect
                 label="College (optional)"
                 value={form.college ? { college_id: form.college_id, college: form.college } : null}
