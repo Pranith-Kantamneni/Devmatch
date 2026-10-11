@@ -28,9 +28,14 @@ class EmbeddingService:
             tokens.extend([project.title.lower()] * weight)
             if project.description:
                 tokens.append(project.description.lower())
+            for project_skill in project.skills or []:
+                skill = getattr(project_skill, "skill", None)
+                if skill is not None and skill.name:
+                    tokens.extend([skill.name.lower()] * weight)
 
         if profile is not None and profile.bio:
-            tokens.append(profile.bio.lower())
+            weight = max(1, int(round(self.settings.EMBEDDING_BIO_WEIGHT)))
+            tokens.extend([profile.bio.lower()] * weight)
 
         return tokens
 
@@ -41,7 +46,7 @@ class EmbeddingService:
             return self.settings.EMBEDDING_TECHNOLOGY_WEIGHT
         if category == SkillCategory.DOMAIN:
             return self.settings.EMBEDDING_DOMAIN_WEIGHT
-        return self.settings.EMBEDDING_SKILL_WEIGHT
+        return self.settings.EMBEDDING_TECHNOLOGY_WEIGHT
 
     def embed_tokens(self, tokens: list[str]) -> list[float]:
         vector = np.zeros(self.dimension, dtype=np.float64)
@@ -57,7 +62,7 @@ class EmbeddingService:
         return vector.tolist()
 
     def embed_text(self, text: str) -> list[float]:
-        return self.embed_tokens([text])
+        return self.embed_tokens([(text or "").lower()])
 
     def embed_profile(self, profile, user_skills, projects) -> list[float]:
         return self.embed_tokens(self.build_tokens(profile, user_skills, projects))

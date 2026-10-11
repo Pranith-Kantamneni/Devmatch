@@ -103,6 +103,25 @@ NOISE_WORDS = {
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 PHONE_RE = re.compile(r"(\(?\+?\d[\d\s().-]{7,}\d\)?)")
+URL_RE = re.compile(
+    r"https?://[^\s,)|>\]]+"
+    r"|www\.[^\s,)|>\]]+"
+    r"|[a-zA-Z0-9-]+\.[a-z]{2,}/[^\s,)|>\]]+"
+)
+BULLET_RE = re.compile(r"^\s*(?:[•·▪◦●○■□▸►→–—]|\-|\*|\+|\d+[.)])\s+")
+TECH_LINE_RE = re.compile(
+    r"^\s*(?:[•·▪◦●○■□▸►→\-*+]\s+)?"
+    r"(?:tech(?:\s+stack|\s*nologies|\s*nical\s+stack)?|stack|built\s+with|tools?(?:\s+used)?)\s*[:|\-–—]",
+    re.IGNORECASE,
+)
+TECH_LABEL_RE = re.compile(
+    r"^(?:tech(?:\s+stack|\s*nologies)?|stack|built\s+with|tools?)\s*[:|\-–—]\s*",
+    re.IGNORECASE,
+)
+PAREN_DATE_RE = re.compile(r"\((?:[^()]*\d{4}[^()]*)\)")
+SHORT_SINGLE_LETTER_SKILLS = {"c", "r"}
+# Ambiguous in free text ("go to", "C grades", ...): only trusted in skills sections.
+SCAN_EXCLUDED_KEYWORDS = {"c", "r", "go", "cv"}
 DATE_RE = re.compile(
     r"((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s,]*\d{4}"
     r"|\d{4}|present|current|now)"
@@ -137,11 +156,31 @@ class ResumeParserService:
         parts = []
         for page in reader.pages:
             parts.append(page.extract_text() or "")
-        return "\n".join(parts)
+        return self._normalize_extracted_text("\n".join(parts))
 
     def _extract_docx(self, content: bytes) -> str:
         doc = Document(io.BytesIO(content))
-        return "\n".join(p.text for p in doc.paragraphs)
+        parts = [p.text for p in doc.paragraphs]
+        # Skills/contact info often live in tables — don't ignore them.
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        for section in doc.sections:
+            for part in (section.header, section.footer):
+                header_text = "\n".join(p.text for p in part.paragraphs).strip()
+                if header_text:
+                    parts.append(header_text)
+        return self._normalize_extracted_text("\n".join(parts))
+
+    @staticmethod
+    def _normalize_extracted_text(text: str) -> str:
+        # Join words hyphenated across PDF line breaks ("frame-\nwork" → "framework").
+        text = re.sub(r"(\w)-\n(\w)", r"\1\2\n", text)
+        # Normalize exotic bullets to "-".
+        text = re.sub(r"^(\s*)[•·▪◦●○■□▸►→](\s+)", r"\1-\2", text, flags=re.MULTILINE)
+        return text
 
     def _parse_text(self, text: str) -> ParsedResume:
         sections = self._split_sections(text)
@@ -154,6 +193,29 @@ class ResumeParserService:
         summary = self._clean_block(sections.get("summary", "")) or None
 
         skills = self._parse_skills(sections.get("skills", ""))
+        if len(skills) < 3:
+            # Thin or missing skills section — recover known skills mentioned
+            # in the summary/experience/projects text.
+            scanned = self._scan_known_skills(
+                "\n".join(
+                    sections.get(name, "")
+                    for name in ("summary", "experience", "projects")
+                )
+            )
+            have = {s.name.lower() for s in skills}
+            for name, category in scanned:
+                if name.lower() not in have:
+                    have.add(name.lower())
+                    skills.append(
+                        ParsedSkill(
+                            name=name,
+                            category=category,
+                            proficiency=3,
+                            years_experience=1.0,
+                        )
+                    )
+                if len(skills) >= 40:
+                    break
         experience = self._parse_experience(sections.get("experience", ""))
         education = self._parse_education(sections.get("education", ""))
         projects = self._parse_projects(sections.get("projects", ""))
@@ -261,12 +323,14 @@ class ResumeParserService:
 
         for part in parts:
             name = self._clean_skill(part)
-            if not name or len(name) < 2 or len(name) > 40:
+            if not name or len(name) > 40:
+                continue
+            if len(name) < 2 and name.lower() not in SHORT_SINGLE_LETTER_SKILLS:
                 continue
             key = name.lower()
             if key in seen or key in NOISE_WORDS:
                 continue
-            if any(char.isdigit() for char in name):
+            if self._looks_like_number_or_year(name):
                 continue
             seen.add(key)
             skills.append(
@@ -279,6 +343,48 @@ class ResumeParserService:
             )
 
         return skills[:40]
+
+    @staticmethod
+    def _looks_like_number_or_year(name: str) -> bool:
+        cleaned = name.strip()
+        # Pure numbers, years ("2021"), versions/quantities ("2+", "3.5", "5 years").
+        if re.fullmatch(r"[\d\s.+,/x×-]+", cleaned):
+            return True
+        if re.fullmatch(r"(19|20)\d{2}", cleaned):
+            return True
+        if re.search(r"\b(years?|yrs?|months?|yoe)\b", cleaned, re.IGNORECASE):
+            return True
+        return False
+
+    def _scan_known_skills(self, text: str) -> list[tuple[str, str]]:
+        """Find catalogued skills mentioned in free text (preserving case)."""
+        text = URL_RE.sub(" ", text)
+        matches: list[tuple[int, int, str, str]] = []
+        for category, keywords in SKILL_CATEGORY_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword.lower() in SCAN_EXCLUDED_KEYWORDS:
+                    continue
+                for match in re.finditer(
+                    r"\b" + re.escape(keyword) + r"\b", text, re.IGNORECASE
+                ):
+                    matches.append(
+                        (match.start(), match.end(), match.group(0).strip(), category)
+                    )
+        # Longest match wins on overlap ("Node.js" beats "Node").
+        matches.sort(key=lambda m: (m[0], -(m[1] - m[0])))
+        kept: list[tuple[int, int, str, str]] = []
+        for start, end, name, category in matches:
+            if any(s <= start and end <= e for s, e, _, _ in kept):
+                continue
+            kept.append((start, end, name, category))
+        found: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for _, _, name, category in kept:
+            key = name.lower()
+            if key not in seen:
+                seen.add(key)
+                found.append((name, category))
+        return found
 
     def _clean_skill(self, text: str) -> str:
         cleaned = text.strip()
@@ -299,10 +405,8 @@ class ResumeParserService:
         if not text.strip():
             return []
         entries: list[ParsedExperience] = []
-        blocks = re.split(r"\n\s*\n", text)
 
-        for block in blocks:
-            lines = [l.strip() for l in block.split("\n") if l.strip()]
+        for lines in self._split_entries(text, kind="experience"):
             if not lines:
                 continue
             duration = None
@@ -325,14 +429,14 @@ class ResumeParserService:
                             company = remainder
                     continue
                 if not title:
-                    title = line
+                    title = self._strip_bullet(line)
                 elif not company and ("|" in line or " at " in line.lower()):
                     parts = re.split(r"\||\s+at\s+", line)
                     company = parts[0].strip() if len(parts) > 1 else None
                     if not company:
-                        company = line
+                        company = self._strip_bullet(line)
                 else:
-                    description_lines.append(line)
+                    description_lines.append(self._strip_bullet(line))
 
             if title:
                 entries.append(
@@ -378,17 +482,159 @@ class ResumeParserService:
         if not text.strip():
             return []
         entries: list[ParsedProject] = []
-        blocks = re.split(r"\n\s*\n", text)
+        seen_titles: set[str] = set()
 
-        for block in blocks:
-            lines = [l.strip() for l in block.split("\n") if l.strip()]
+        for lines in self._split_entries(text, kind="project"):
             if not lines:
                 continue
-            title = lines[0]
-            description = self._clean_block("\n".join(lines[1:])) or None
-            entries.append(ParsedProject(title=title, description=description))
+            title, tech, url = self._parse_project_header(lines[0])
+            if not title:
+                continue
+            key = title.lower()
+            if key in seen_titles:
+                continue
+            seen_titles.add(key)
+
+            description_lines: list[str] = []
+            for line in lines[1:]:
+                tech_match = TECH_LINE_RE.match(line)
+                if tech_match:
+                    tech.extend(self._extract_tech_skills(line[tech_match.end():]))
+                    continue
+                for found_url in URL_RE.findall(line):
+                    if url is None:
+                        url = found_url if found_url.startswith("http") else f"https://{found_url}"
+                cleaned = self._strip_bullet(line)
+                # A bare tech list ("React, Node, MongoDB") is skills, not prose.
+                if cleaned and self._looks_like_tech_list(cleaned):
+                    tech.extend(self._extract_tech_skills(cleaned))
+                    continue
+                if cleaned:
+                    description_lines.append(cleaned)
+
+            # Recover tech mentioned anywhere in the entry.
+            for name, _ in self._scan_known_skills("\n".join(lines)):
+                tech.append(name)
+
+            deduped_tech = list(dict.fromkeys(t for t in (s.strip() for s in tech) if t))
+            entries.append(
+                ParsedProject(
+                    title=title,
+                    description=self._clean_block("\n".join(description_lines)) or None,
+                    skills=deduped_tech[:15],
+                    url=url,
+                )
+            )
 
         return entries[:10]
+
+    def _split_entries(self, text: str, kind: str) -> list[list[str]]:
+        """Split a section into entries.
+
+        Blank lines always split. Because PDF/DOCX extraction often drops
+        blank lines, header-like lines also start a new entry: date-range
+        lines, "Title | meta" / "Title – meta" lines, and (for projects)
+        short title lines followed by a longer description line.
+        """
+        raw_lines = [line.rstrip() for line in text.split("\n")]
+        # Drop empties but remember where blanks were.
+        entries: list[list[str]] = []
+        current: list[str] = []
+
+        lines = [line.strip() for line in raw_lines]
+        non_empty_idx = [i for i, line in enumerate(lines) if line]
+        for pos, i in enumerate(non_empty_idx):
+            line = lines[i]
+            prev_blank = pos == 0 or non_empty_idx[pos - 1] != i - 1
+            next_line = lines[non_empty_idx[pos + 1]] if pos + 1 < len(non_empty_idx) else None
+            if current and (prev_blank or self._is_entry_header(line, next_line, kind)):
+                entries.append(current)
+                current = []
+            current.append(line)
+        if current:
+            entries.append(current)
+        return entries
+
+    def _is_entry_header(self, line: str, next_line: str | None, kind: str) -> bool:
+        stripped = self._strip_bullet(line)
+        if not stripped or len(stripped) > 140:
+            return False
+        bulleted = bool(BULLET_RE.match(line))
+        if "|" in stripped:
+            left = stripped.split("|", 1)[0].strip()
+            # A bare "a | b | c" skill list is not a header.
+            if left and len(left) <= 80:
+                return True
+        if re.search(r"\s[–—]\s", stripped) and len(stripped) <= 120:
+            return True
+        if DATE_RE.search(stripped) or PAREN_DATE_RE.search(stripped):
+            return True
+        if bulleted:
+            # Plain bullets are descriptions — never entry headers.
+            return False
+        if kind == "project" and next_line:
+            nxt = self._strip_bullet(next_line)
+            words = stripped.split()
+            if (
+                len(stripped) <= 70
+                and len(words) <= 8
+                and not stripped.endswith((".", ":", "?", "!"))
+                and nxt
+                and len(nxt) > len(stripped) + 15
+            ):
+                return True
+        if kind == "experience" and re.search(r"\s+at\s+", stripped, re.IGNORECASE):
+            return True
+        return False
+
+    @staticmethod
+    def _strip_bullet(line: str) -> str:
+        return BULLET_RE.sub("", line).strip()
+
+    def _parse_project_header(self, line: str) -> tuple[str | None, list[str], str | None]:
+        text = self._strip_bullet(line)
+        url = None
+        for found in URL_RE.findall(text):
+            if url is None:
+                url = found if found.startswith("http") else f"https://{found}"
+        text = URL_RE.sub("", text)
+        text = PAREN_DATE_RE.sub("", text)
+        text = DATE_RE.sub("", text)
+        tech: list[str] = []
+        segments = [seg.strip(" |-–—") for seg in re.split(r"\s*\|\s*", text)]
+        title = segments[0].strip() if segments else ""
+        title = re.sub(r"\s+", " ", title).strip(" -–—:,")
+        for segment in segments[1:]:
+            if segment:
+                tech.extend(self._extract_tech_skills(segment))
+        if not title:
+            return None, [], url
+        return title, tech, url
+
+    def _extract_tech_skills(self, text: str) -> list[str]:
+        parts = re.split(r"[,;•·|/]+", text)
+        skills = []
+        for part in parts:
+            name = self._clean_skill(TECH_LABEL_RE.sub("", part))
+            if not name or len(name) > 40:
+                continue
+            if len(name) < 2 and name.lower() not in SHORT_SINGLE_LETTER_SKILLS:
+                continue
+            if self._looks_like_number_or_year(name) or name.lower() in NOISE_WORDS:
+                continue
+            skills.append(name)
+        return skills
+
+    def _looks_like_tech_list(self, line: str) -> bool:
+        if "|" in line or len(line) > 120:
+            return False
+        parts = [p.strip() for p in re.split(r"[,;•·/]+", line) if p.strip()]
+        if len(parts) < 2:
+            return False
+        if any(len(p) > 30 or len(p.split()) > 4 for p in parts):
+            return False
+        # At least one recognizable skill — avoids eating real sentences.
+        return any(self._infer_category(p) != "other" for p in parts)
 
     def _clean_block(self, text: str) -> str:
         lines = [l.strip() for l in text.split("\n") if l.strip()]

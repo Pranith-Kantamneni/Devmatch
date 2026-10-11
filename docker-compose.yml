@@ -2,12 +2,13 @@ services:
   db:
     image: postgres:17
     container_name: devmatch-db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-devmatch}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devmatch}
       POSTGRES_DB: ${POSTGRES_DB:-devmatch}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -19,6 +20,7 @@ services:
   api:
     build: .
     container_name: devmatch-api
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-devmatch}:${POSTGRES_PASSWORD:-devmatch}@db:5432/${POSTGRES_DB:-devmatch}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set in the environment or .env file}
@@ -28,7 +30,7 @@ services:
       DEBUG: ${DEBUG:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy

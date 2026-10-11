@@ -1,7 +1,7 @@
 const PALETTE = [
-  '#6366f1', '#8b5cf6', '#ec4899', '#f43f5e',
-  '#f97316', '#eab308', '#22c55e', '#14b8a6',
-  '#06b6d4', '#3b82f6',
+  '#0e7a55', '#1d5fa8', '#8a5a18', '#a03d2d',
+  '#5b54a6', '#0f766e', '#7c3f67', '#4d6b2f',
+  '#8a4b1f', '#3e5c76',
 ]
 
 function colorFor(name = '') {
@@ -27,7 +27,7 @@ export default function Avatar({ name = '', size = 40, className = '' }) {
       style={{
         width: size,
         height: size,
-        background: `linear-gradient(135deg, ${bg}, ${bg}cc)`,
+        background: bg,
         fontSize: size * 0.36,
       }}
     >

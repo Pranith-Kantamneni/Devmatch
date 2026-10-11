@@ -9,11 +9,13 @@ export default function Button({
   className = '',
   ...props
 }) {
+  const { disabled: _ignoredDisabled, ...rest } = props
   return (
     <button
       className={`btn btn-${variant} btn-${size} ${className}`}
       disabled={disabled || loading}
-      {...props}
+      aria-busy={loading || undefined}
+      {...rest}
     >
       {loading && <Loader2 size={16} className="spin" />}
       {children}

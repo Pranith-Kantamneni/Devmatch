@@ -6,6 +6,7 @@ const AuthContext = createContext(null)
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [authError, setAuthError] = useState(null)
 
   useEffect(() => {
     if (!getToken()) {
@@ -14,8 +15,20 @@ export function AuthProvider({ children }) {
     }
     api
       .getMe()
-      .then(setUser)
-      .catch(() => setToken(null))
+      .then((me) => {
+        setUser(me)
+        setAuthError(null)
+      })
+      .catch((err) => {
+        // Only a 401 means the token is bad. Network/500 errors must not
+        // silently log the user out — surface them instead.
+        if (err?.status === 401) {
+          setToken(null)
+          setUser(null)
+        } else {
+          setAuthError(err?.message || 'Could not reach the server')
+        }
+      })
       .finally(() => setLoading(false))
   }, [])
 
@@ -26,11 +39,25 @@ export function AuthProvider({ children }) {
   }, [])
 
   const login = useCallback(async (email, password) => {
-    const res = await api.login({ email, password })
-    setToken(res.access_token)
-    const me = await api.getMe()
-    setUser(me)
-    return me
+    try {
+      const res = await api.login({ email, password })
+      setToken(res.access_token)
+      try {
+        const me = await api.getMe()
+        setUser(me)
+        setAuthError(null)
+        return me
+      } catch (err) {
+        // Token is valid but profile fetch failed — don't leave a half-auth
+        // state; roll back so the user can retry cleanly.
+        setToken(null)
+        setUser(null)
+        throw err
+      }
+    } catch (err) {
+      setUser(null)
+      throw err
+    }
   }, [])
 
   const register = useCallback(async (username, email, password) => {
@@ -38,13 +65,28 @@ export function AuthProvider({ children }) {
     return login(email, password)
   }, [login])
 
+  // Used after OAuth callbacks: the backend already verified the identity.
+  const loginWithToken = useCallback(async (accessToken) => {
+    setToken(accessToken)
+    try {
+      const me = await api.getMe()
+      setUser(me)
+      setAuthError(null)
+      return me
+    } catch (err) {
+      setToken(null)
+      setUser(null)
+      throw err
+    }
+  }, [])
+
   const logout = useCallback(() => {
     setToken(null)
     setUser(null)
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, isAuthenticated: !!user }}>
+    <AuthContext.Provider value={{ user, loading, authError, retryAuth: () => window.location.reload(), login, register, loginWithToken, logout, isAuthenticated: !!user }}>
       {children}
     </AuthContext.Provider>
   )

@@ -1,10 +1,18 @@
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.deps import get_current_user, get_db, get_optional_current_user
 from app.db.models.team_project import TeamRequestStatus
 from app.db.models.user import User
+from app.schemas.chat import (
+    ApplicationMessageResponse,
+    MessageCreate,
+    PollCreate,
+    PollResponse,
+    PollVote,
+    TeamMessageResponse,
+)
 from app.schemas.team_project import (
     ApplyRequest,
     InviteRequest,
@@ -16,6 +24,7 @@ from app.schemas.team_project import (
     TeamProjectResponse,
     TeamProjectSkillAdd,
     TeamProjectUpdate,
+    TeamSkillGaps,
 )
 from app.services.embedding_service import EmbeddingService
 from app.services.matching_service import MatchingService
@@ -49,12 +58,16 @@ def create_team_project(
     summary="Discover team projects",
 )
 def list_team_projects(
+    response: Response,
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     college: str | None = Query(default=None),
     q: str | None = Query(default=None),
     service: TeamProjectService = Depends(get_team_service),
 ):
+    response.headers["X-Total-Count"] = str(
+        service.team_repo.count_projects(college=college, q=q)
+    )
     return service.list_projects(skip=skip, limit=limit, college=college, q=q)
 
 
@@ -268,6 +281,142 @@ def invite_developer(
     service: TeamProjectService = Depends(get_team_service),
 ):
     return service.invite(current_user.id, project_id, data.user_id, data.message)
+
+
+@router.get(
+    "/{project_id}/skill-gaps",
+    response_model=TeamSkillGaps,
+    summary="Which required skills the roster covers and what's missing (creator only)",
+)
+def get_skill_gaps(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    service: TeamProjectService = Depends(get_team_service),
+):
+    return service.get_skill_gaps(current_user.id, project_id)
+
+
+@router.get(
+    "/{project_id}/messages",
+    response_model=list[TeamMessageResponse],
+    summary="Read the team group chat (members only)",
+)
+def list_team_messages(
+    project_id: int,
+    limit: int = Query(default=50, ge=1, le=100),
+    before_id: int | None = Query(default=None, ge=1),
+    current_user: User = Depends(get_current_user),
+    service: TeamProjectService = Depends(get_team_service),
+):
+    return service.list_team_messages(current_user.id, project_id, limit, before_id)
+
+
+@router.post(
+    "/{project_id}/messages",
+    response_model=TeamMessageResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Post to the team group chat (members only)",
+)
+def post_team_message(
+    project_id: int,
+    data: MessageCreate,
+    current_user: User = Depends(get_current_user),
+    service: TeamProjectService = Depends(get_team_service),
+):
+    return service.post_team_message(current_user.id, project_id, data.body)
+
+
+@router.get(
+    "/{project_id}/applications/{application_id}/messages",
+    response_model=list[ApplicationMessageResponse],
+    summary="Read an application chat thread (applicant or creator)",
+)
+def list_application_messages(
+    project_id: int,
+    application_id: int,
+    limit: int = Query(default=50, ge=1, le=100),
+    before_id: int | None = Query(default=None, ge=1),
+    current_user: User = Depends(get_current_user),
+    service: TeamProjectService = Depends(get_team_service),
+):
+    return service.list_application_messages(
+        current_user.id, project_id, application_id, limit, before_id
+    )
+
+
+@router.post(
+    "/{project_id}/applications/{application_id}/messages",
+    response_model=ApplicationMessageResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Post to an application chat thread (applicant or creator)",
+)
+def post_application_message(
+    project_id: int,
+    application_id: int,
+    data: MessageCreate,
+    current_user: User = Depends(get_current_user),
+    service: TeamProjectService = Depends(get_team_service),
+):
+    return service.post_application_message(
+        current_user.id, project_id, application_id, data.body
+    )
+
+
+@router.get(
+    "/{project_id}/polls",
+    response_model=list[PollResponse],
+    summary="List team polls (members only, unlocks with 2 members)",
+)
+def list_polls(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    service: TeamProjectService = Depends(get_team_service),
+):
+    return service.list_polls(current_user.id, project_id)
+
+
+@router.post(
+    "/{project_id}/polls",
+    response_model=PollResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a team poll (members only, unlocks with 2 members)",
+)
+def create_poll(
+    project_id: int,
+    data: PollCreate,
+    current_user: User = Depends(get_current_user),
+    service: TeamProjectService = Depends(get_team_service),
+):
+    return service.create_poll(current_user.id, project_id, data)
+
+
+@router.post(
+    "/{project_id}/polls/{poll_id}/vote",
+    response_model=PollResponse,
+    summary="Vote in a team poll (changeable until closed)",
+)
+def vote_poll(
+    project_id: int,
+    poll_id: int,
+    data: PollVote,
+    current_user: User = Depends(get_current_user),
+    service: TeamProjectService = Depends(get_team_service),
+):
+    return service.vote_poll(current_user.id, project_id, poll_id, data)
+
+
+@router.post(
+    "/{project_id}/polls/{poll_id}/close",
+    response_model=PollResponse,
+    summary="Close a poll (team creator or poll creator)",
+)
+def close_poll(
+    project_id: int,
+    poll_id: int,
+    current_user: User = Depends(get_current_user),
+    service: TeamProjectService = Depends(get_team_service),
+):
+    return service.close_poll(current_user.id, project_id, poll_id)
 
 
 @router.delete(

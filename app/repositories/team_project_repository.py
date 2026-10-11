@@ -1,5 +1,7 @@
 from sqlalchemy.orm import Session, joinedload, selectinload
 
+from app.db.models.team_message import ApplicationMessage, TeamMessage
+from app.db.models.team_poll import TeamPoll, TeamPollOption, TeamPollVote
 from app.db.models.team_project import (
     TeamApplication,
     TeamInvitation,
@@ -47,14 +49,35 @@ class TeamProjectRepository:
         self, skip: int = 0, limit: int = 20, college: str | None = None, q: str | None = None
     ) -> list[TeamProject]:
         query = self.db.query(TeamProject).order_by(TeamProject.created_at.desc())
-        if college:
-            query = query.filter(TeamProject.college.ilike(college))
-        if q:
-            like = f"%{q}%"
+        if college and college.strip():
+            query = query.filter(TeamProject.college.ilike(college.strip()))
+        if q and q.strip():
+            escaped = (
+                q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            like = f"%{escaped}%"
             query = query.filter(
-                (TeamProject.title.ilike(like)) | (TeamProject.description.ilike(like))
+                (TeamProject.title.ilike(like, escape="\\"))
+                | (TeamProject.description.ilike(like, escape="\\"))
             )
         return query.offset(skip).limit(limit).all()
+
+    def count_projects(
+        self, college: str | None = None, q: str | None = None
+    ) -> int:
+        query = self.db.query(TeamProject)
+        if college and college.strip():
+            query = query.filter(TeamProject.college.ilike(college.strip()))
+        if q and q.strip():
+            escaped = (
+                q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            like = f"%{escaped}%"
+            query = query.filter(
+                (TeamProject.title.ilike(like, escape="\\"))
+                | (TeamProject.description.ilike(like, escape="\\"))
+            )
+        return query.count()
 
     def update(self, project: TeamProject, data: dict) -> TeamProject:
         for key, value in data.items():
@@ -297,3 +320,153 @@ class TeamProjectRepository:
             .all()
         )
         return {invitee_id: status for invitee_id, status in rows}
+
+    # -- chat --------------------------------------------------------
+
+    def create_team_message(
+        self, team_project_id: int, sender_id: int | None, sender_username: str, body: str
+    ) -> TeamMessage:
+        message = TeamMessage(
+            team_project_id=team_project_id,
+            sender_id=sender_id,
+            sender_username=sender_username,
+            body=body,
+        )
+        self.db.add(message)
+        self.db.commit()
+        self.db.refresh(message)
+        return message
+
+    def list_team_messages(
+        self, team_project_id: int, limit: int = 50, before_id: int | None = None
+    ) -> list[TeamMessage]:
+        # Latest window by default (ascending for display); keyset page
+        # older history with before_id.
+        query = self.db.query(TeamMessage).filter(
+            TeamMessage.team_project_id == team_project_id
+        )
+        if before_id is not None:
+            query = query.filter(TeamMessage.id < before_id)
+        rows = query.order_by(TeamMessage.id.desc()).limit(limit).all()
+        return list(reversed(rows))
+
+    def count_team_messages(self, team_project_id: int) -> int:
+        return (
+            self.db.query(TeamMessage)
+            .filter(TeamMessage.team_project_id == team_project_id)
+            .count()
+        )
+
+    def create_application_message(
+        self,
+        team_project_id: int,
+        application_id: int,
+        sender_id: int | None,
+        sender_username: str,
+        body: str,
+    ) -> ApplicationMessage:
+        message = ApplicationMessage(
+            team_project_id=team_project_id,
+            application_id=application_id,
+            sender_id=sender_id,
+            sender_username=sender_username,
+            body=body,
+        )
+        self.db.add(message)
+        self.db.commit()
+        self.db.refresh(message)
+        return message
+
+    def list_application_messages(
+        self, application_id: int, limit: int = 50, before_id: int | None = None
+    ) -> list[ApplicationMessage]:
+        query = self.db.query(ApplicationMessage).filter(
+            ApplicationMessage.application_id == application_id
+        )
+        if before_id is not None:
+            query = query.filter(ApplicationMessage.id < before_id)
+        rows = query.order_by(ApplicationMessage.id.desc()).limit(limit).all()
+        return list(reversed(rows))
+
+    # -- polls -------------------------------------------------------
+
+    def create_poll(
+        self,
+        team_project_id: int,
+        creator_id: int | None,
+        creator_username: str,
+        question: str,
+        options: list[str],
+    ) -> TeamPoll:
+        poll = TeamPoll(
+            team_project_id=team_project_id,
+            creator_id=creator_id,
+            creator_username=creator_username,
+            question=question,
+            is_closed=False,
+        )
+        self.db.add(poll)
+        self.db.flush()
+        for position, text in enumerate(options):
+            self.db.add(
+                TeamPollOption(poll_id=poll.id, text=text, position=position)
+            )
+        self.db.commit()
+        self.db.refresh(poll)
+        return poll
+
+    def list_polls(self, team_project_id: int) -> list[TeamPoll]:
+        return (
+            self.db.query(TeamPoll)
+            .options(selectinload(TeamPoll.options))
+            .filter(TeamPoll.team_project_id == team_project_id)
+            .order_by(TeamPoll.created_at.desc())
+            .all()
+        )
+
+    def get_poll(self, poll_id: int) -> TeamPoll | None:
+        return (
+            self.db.query(TeamPoll)
+            .options(selectinload(TeamPoll.options))
+            .filter(TeamPoll.id == poll_id)
+            .first()
+        )
+
+    def vote_counts(self, poll_id: int) -> dict[int, int]:
+        from sqlalchemy import func as sa_func
+
+        rows = (
+            self.db.query(TeamPollVote.option_id, sa_func.count(TeamPollVote.id))
+            .filter(TeamPollVote.poll_id == poll_id)
+            .group_by(TeamPollVote.option_id)
+            .all()
+        )
+        return {option_id: count for option_id, count in rows}
+
+    def voter_option(self, poll_id: int, voter_id: int) -> int | None:
+        row = (
+            self.db.query(TeamPollVote.option_id)
+            .filter(
+                TeamPollVote.poll_id == poll_id,
+                TeamPollVote.voter_id == voter_id,
+            )
+            .first()
+        )
+        return row[0] if row else None
+
+    def cast_vote(self, poll_id: int, option_id: int, voter_id: int) -> None:
+        # One vote per poll — changing your vote replaces it.
+        self.db.query(TeamPollVote).filter(
+            TeamPollVote.poll_id == poll_id,
+            TeamPollVote.voter_id == voter_id,
+        ).delete()
+        self.db.add(
+            TeamPollVote(poll_id=poll_id, option_id=option_id, voter_id=voter_id)
+        )
+        self.db.commit()
+
+    def close_poll(self, poll: TeamPoll) -> TeamPoll:
+        poll.is_closed = True
+        self.db.commit()
+        self.db.refresh(poll)
+        return poll

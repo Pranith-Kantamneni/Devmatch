@@ -5,6 +5,7 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-devmatch")
 os.environ.setdefault("JWT_ALGORITHM", "HS256")
 os.environ.setdefault("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30")
 os.environ.setdefault("ENVIRONMENT", "test")
+os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,9 +13,17 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core import cache as result_cache
 from app.db.models import Base
 from app.db.session import get_db
 from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _clear_result_cache():
+    result_cache.clear()
+    yield
+    result_cache.clear()
 
 
 @pytest.fixture(scope="session")

@@ -45,6 +45,37 @@ class Settings(BaseSettings):
     MATCHING_DEFAULT_LIMIT: int = 10
     MATCHING_MAX_LIMIT: int = 50
 
+    # -- OAuth (social login) -------------------------------------------
+    # Each provider is enabled by setting its client ID + secret.
+    # Redirect URIs are FRONTEND pages (the SPA completes the flow via the
+    # API), e.g. http://localhost:5173/auth/callback — register exactly
+    # this URL in each provider's console.
+    FRONTEND_URL: str = "http://localhost:5173"
+    OAUTH_STATE_EXPIRE_MINUTES: int = 10
+
+    GOOGLE_CLIENT_ID: str | None = None
+    GOOGLE_CLIENT_SECRET: str | None = None
+    GOOGLE_REDIRECT_URI: str | None = None
+
+    GITHUB_CLIENT_ID: str | None = None
+    GITHUB_CLIENT_SECRET: str | None = None
+    GITHUB_REDIRECT_URI: str | None = None
+
+    LINKEDIN_CLIENT_ID: str | None = None
+    LINKEDIN_CLIENT_SECRET: str | None = None
+    LINKEDIN_REDIRECT_URI: str | None = None
+
+    # -- Scale / hardening ----------------------------------------------
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_AUTH_PER_MINUTE: int = 30
+    RATE_LIMIT_DEFAULT_PER_MINUTE: int = 120
+    RECOMMENDATION_CACHE_TTL_SECONDS: int = 60
+
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    DB_POOL_RECYCLE_SECONDS: int = 1800
+    DB_POOL_TIMEOUT_SECONDS: int = 30
+
 
 @lru_cache
 def get_settings() -> Settings:

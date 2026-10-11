@@ -7,7 +7,7 @@ class SkillAdd(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     category: SkillCategory = SkillCategory.OTHER
     proficiency: int = Field(default=3, ge=1, le=5)
-    years_experience: float | None = Field(default=None, ge=0)
+    years_experience: float | None = Field(default=None, ge=0, le=60)
 
 
 class SkillBrief(BaseModel):

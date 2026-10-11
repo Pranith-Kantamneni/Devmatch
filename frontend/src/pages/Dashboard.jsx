@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import {
   Plus, Trash2, MapPin, Briefcase, GraduationCap, Link2,
   Code2, FolderKanban, Sparkles, Pencil, CheckCircle2, UserCheck, Upload,
+  Check, X,
 } from 'lucide-react'
 import Card from '../components/ui/Card'
 import Input from '../components/ui/Input'
@@ -13,6 +14,8 @@ import Badge from '../components/ui/Badge'
 import Avatar from '../components/ui/Avatar'
 import Modal from '../components/ui/Modal'
 import EmptyState from '../components/ui/EmptyState'
+import OnboardingChecklist from '../components/OnboardingChecklist'
+import CollegeSelect from '../components/CollegeSelect'
 import { api } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
@@ -35,10 +38,49 @@ const SKILL_CATEGORIES = [
 
 function ProficiencyDots({ value }) {
   return (
-    <span className="proficiency">
+    <span className="proficiency" role="img" aria-label={`Proficiency ${value} out of 5`}>
       {[1, 2, 3, 4, 5].map((n) => (
         <span key={n} className={`prof-dot ${n <= value ? 'active' : ''}`} />
       ))}
+    </span>
+  )
+}
+
+/** Two-tap delete: first tap arms ("Sure?"), second confirms. No dialogs. */
+function DeleteButton({ label, onDelete }) {
+  const [arming, setArming] = useState(false)
+  useEffect(() => {
+    if (!arming) return
+    const timer = setTimeout(() => setArming(false), 3000)
+    return () => clearTimeout(timer)
+  }, [arming])
+
+  if (!arming) {
+    return (
+      <button className="icon-btn danger" onClick={() => setArming(true)} title={label} aria-label={label}>
+        <Trash2 size={15} />
+      </button>
+    )
+  }
+  return (
+    <span className="delete-confirm">
+      <span className="delete-confirm-text">Sure?</span>
+      <button
+        className="icon-btn danger"
+        onClick={() => { setArming(false); onDelete(); }}
+        title="Yes, delete"
+        aria-label="Yes, delete"
+      >
+        <Check size={15} />
+      </button>
+      <button
+        className="icon-btn"
+        onClick={() => setArming(false)}
+        title="Keep it"
+        aria-label="Cancel delete"
+      >
+        <X size={15} />
+      </button>
     </span>
   )
 }
@@ -51,6 +93,7 @@ export default function Dashboard() {
 
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [editing, setEditing] = useState(false)
   const [uploading, setUploading] = useState(false)
 
@@ -58,12 +101,17 @@ export default function Dashboard() {
   const [projectModal, setProjectModal] = useState(false)
 
   const loadProfile = useCallback(async () => {
+    setLoadError('')
     try {
       const data = await api.getMyProfile()
       setProfile(data)
     } catch (err) {
-      if (err.status !== 404) toast(err.message, 'error')
-      setProfile(null)
+      if (err.status === 404) {
+        setProfile(null)
+      } else {
+        setLoadError(err.message || 'Could not load your profile')
+        toast(err.message, 'error')
+      }
     } finally {
       setLoading(false)
     }
@@ -101,6 +149,16 @@ export default function Dashboard() {
   }
 
   const handleUpload = async (file) => {
+    const allowed = ['.pdf', '.docx', '.txt', '.md']
+    const lower = (file.name || '').toLowerCase()
+    if (!allowed.some((ext) => lower.endsWith(ext)) || (lower.endsWith('.doc') && !lower.endsWith('.docx'))) {
+      toast('Unsupported file type. Upload a PDF, DOCX, or TXT resume.', 'error')
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast('File is too large. Maximum size is 10MB.', 'error')
+      return
+    }
     setUploading(true)
     try {
       const parsed = await api.parseResume(file)
@@ -128,6 +186,18 @@ export default function Dashboard() {
   }
 
   if (!profile) {
+    if (loadError) {
+      return (
+        <div className="page">
+          <EmptyState
+            icon={<UserCheck size={32} />}
+            title="Could not load your profile"
+            description={loadError}
+            action={<Button onClick={loadProfile}>Retry</Button>}
+          />
+        </div>
+      )
+    }
     return (
       <div className="page">
         <EmptyState
@@ -157,7 +227,7 @@ export default function Dashboard() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".pdf,.docx,.doc,.txt,.md"
+            accept=".pdf,.docx,.txt,.md"
             style={{ display: 'none' }}
             onChange={handleFileSelect}
           />
@@ -176,13 +246,19 @@ export default function Dashboard() {
         <div className="dashboard-main">
           <Card className="profile-card">
             <div className="profile-card-header">
-              <Avatar name={profile.full_name || user.username} size={72} />
+              <Avatar name={profile.full_name || user?.username || 'you'} size={80} />
               <div className="profile-card-info">
-                <h2 className="profile-name">{profile.full_name || user.username}</h2>
-                <p className="profile-username">@{user.username}</p>
+                <h2 className="profile-name">{profile.full_name || user?.username || 'Your profile'}</h2>
+                <p className="profile-username">@{user?.username || 'you'}</p>
                 <div className="profile-meta">
                   {profile.location && (
                     <span className="profile-meta-item"><MapPin size={13} /> {profile.location}</span>
+                  )}
+                  {profile.college && (
+                    <span className="profile-meta-item"><GraduationCap size={13} /> {profile.college}</span>
+                  )}
+                  {profile.branch && (
+                    <span className="profile-meta-item">{profile.branch}</span>
                   )}
                   {profile.experience_level && (
                     <span className="profile-meta-item">
@@ -196,9 +272,9 @@ export default function Dashboard() {
             {profile.bio && <p className="profile-bio">{profile.bio}</p>}
 
             <div className="profile-status-row">
-              <span className={`profile-status ${profile.available ? 'active' : ''}`}>
+              <span className={`profile-status ${profile.availability ? 'active' : ''}`}>
                 <span className="profile-status-dot" />
-                {profile.available ? 'Available for hackathons' : 'Not available right now'}
+                {profile.availability ? 'Available for hackathons' : 'Not available right now'}
               </span>
             </div>
 
@@ -256,9 +332,7 @@ export default function Dashboard() {
                     </div>
                     <div className="skill-item-side">
                       <ProficiencyDots value={s.proficiency} />
-                      <button className="icon-btn danger" onClick={() => handleRemoveSkill(s.skill_id)} title="Remove skill">
-                        <Trash2 size={15} />
-                      </button>
+                      <DeleteButton label={`Remove ${s.name}`} onDelete={() => handleRemoveSkill(s.skill_id)} />
                     </div>
                   </div>
                 ))}
@@ -291,9 +365,7 @@ export default function Dashboard() {
                     <div className="project-item-main">
                       <div className="project-item-top">
                         <span className="project-title">{p.title}</span>
-                        <button className="icon-btn danger" onClick={() => handleRemoveProject(p.id)} title="Remove project">
-                          <Trash2 size={15} />
-                        </button>
+                        <DeleteButton label={`Remove ${p.title}`} onDelete={() => handleRemoveProject(p.id)} />
                       </div>
                       {p.description && <p className="project-desc">{p.description}</p>}
                       {p.skills.length > 0 && (
@@ -324,6 +396,15 @@ export default function Dashboard() {
         </div>
 
         <div className="dashboard-side">
+          <OnboardingChecklist
+            profile={profile}
+            actions={{
+              onEdit: () => setEditing(true),
+              onAddSkill: () => setSkillModal(true),
+              onAddProject: () => setProjectModal(true),
+              onUploadResume: () => fileInputRef.current?.click(),
+            }}
+          />
           <Card className="side-card">
             <div className="side-card-header">
               <Sparkles size={18} className="side-icon" />
@@ -370,6 +451,8 @@ function ProfileEditor({ profile, onSaved, open = true, onClose }) {
     location: profile?.location || '',
     education: profile?.education || '',
     college: profile?.college || '',
+    college_id: profile?.college_id || null,
+    branch: profile?.branch || '',
     experience_level: profile?.experience_level || '',
     github_url: profile?.github_url || '',
     linkedin_url: profile?.linkedin_url || '',
@@ -378,18 +461,44 @@ function ProfileEditor({ profile, onSaved, open = true, onClose }) {
     collaboration_preferences: profile?.collaboration_preferences || '',
   })
   const [saving, setSaving] = useState(false)
+  const [urlErrors, setUrlErrors] = useState({})
+  const [branches, setBranches] = useState([])
+
+  useEffect(() => {
+    api
+      .listBranches()
+      .then((data) => setBranches(data.branches || []))
+      .catch(() => setBranches([]))
+  }, [])
 
   const set = (key) => (e) => {
     const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value
     setForm((f) => ({ ...f, [key]: value }))
+    if (key.endsWith('_url')) {
+      setUrlErrors((errs) => ({ ...errs, [key]: '' }))
+    }
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    const bad = {}
+    for (const key of ['github_url', 'linkedin_url', 'portfolio_url']) {
+      const value = (form[key] || '').trim()
+      if (value && !/^https?:\/\/.+\..+/.test(value)) {
+        bad[key] = 'Must start with http(s)://'
+      }
+    }
+    setUrlErrors(bad)
+    if (Object.keys(bad).length > 0) return
     setSaving(true)
     try {
       const payload = { ...form }
       if (!payload.experience_level) payload.experience_level = null
+      if (!payload.branch?.trim()) payload.branch = null
+      if (!payload.college?.trim() && !payload.college_id) {
+        payload.college = null
+        payload.college_id = null
+      }
       const updated = await api.updateProfile(payload)
       toast('Profile updated')
       onSaved(updated)
@@ -408,16 +517,30 @@ function ProfileEditor({ profile, onSaved, open = true, onClose }) {
         <Input label="Full name" value={form.full_name} onChange={set('full_name')} placeholder="Your name" />
         <Input label="Location" value={form.location} onChange={set('location')} placeholder="City, Country" />
         <Input label="Education" value={form.education} onChange={set('education')} placeholder="Degree, institution" />
-        <Input label="College" value={form.college} onChange={set('college')} placeholder="e.g. MIT — used for same-college teams" />
+        <CollegeSelect
+          value={form.college ? { college_id: form.college_id, college: form.college } : null}
+          onChange={(v) => {
+            setForm((f) => ({ ...f, college: v?.college || '', college_id: v?.college_id || null }))
+          }}
+          hint="Pick from 360+ colleges — powers same-college teams"
+        />
+        <div>
+          <Input label="Branch / Department" value={form.branch} onChange={set('branch')} placeholder="e.g. Computer Science and Engineering" list="branch-options" />
+          <datalist id="branch-options">
+            {branches.map((b) => (
+              <option key={b} value={b} />
+            ))}
+          </datalist>
+        </div>
         <Select label="Experience level" value={form.experience_level} onChange={set('experience_level')}>
           <option value="">Select level</option>
           {EXPERIENCE_LEVELS.map((l) => (
             <option key={l.value} value={l.value}>{l.label}</option>
           ))}
         </Select>
-        <Input label="GitHub URL" value={form.github_url} onChange={set('github_url')} placeholder="https://github.com/..." />
-        <Input label="LinkedIn URL" value={form.linkedin_url} onChange={set('linkedin_url')} placeholder="https://linkedin.com/in/..." />
-        <Input label="Portfolio URL" value={form.portfolio_url} onChange={set('portfolio_url')} placeholder="https://..." />
+        <Input label="GitHub URL" value={form.github_url} onChange={set('github_url')} placeholder="https://github.com/..." error={urlErrors.github_url} />
+        <Input label="LinkedIn URL" value={form.linkedin_url} onChange={set('linkedin_url')} placeholder="https://linkedin.com/in/..." error={urlErrors.linkedin_url} />
+        <Input label="Portfolio URL" value={form.portfolio_url} onChange={set('portfolio_url')} placeholder="https://..." error={urlErrors.portfolio_url} />
       </div>
 
       <label className="toggle-row">

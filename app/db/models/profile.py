@@ -37,6 +37,10 @@ class DeveloperProfile(Base):
 
     college: Mapped[str | None] = mapped_column(sa.String(255))
 
+    college_id: Mapped[str | None] = mapped_column(sa.String(100), index=True)
+
+    branch: Mapped[str | None] = mapped_column(sa.String(100))
+
     experience_level: Mapped[ExperienceLevel | None] = mapped_column(
         sa.Enum(ExperienceLevel, name="experience_level_enum", native_enum=False),
     )

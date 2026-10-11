@@ -1,6 +1,10 @@
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import ConflictException, InvalidCredentialsException
+from app.core.exceptions import (
+    ConflictException,
+    InvalidCredentialsException,
+)
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.models.profile import DeveloperProfile
 from app.db.models.user import User
@@ -14,27 +18,44 @@ class AuthService:
         self.user_repo = UserRepository(db)
 
     def register(self, user_data: UserCreate) -> User:
-        existing = self.user_repo.get_by_email_or_username(
-            user_data.email, user_data.username
-        )
+        email = user_data.email.strip().lower()
+        username = user_data.username.strip()
+        existing = self.user_repo.get_by_email_or_username(email, username)
         if existing:
             raise ConflictException("Username or email already exists")
 
         user = User(
-            username=user_data.username,
-            email=user_data.email,
+            username=username,
+            email=email,
             password_hash=hash_password(user_data.password),
         )
-        user = self.user_repo.create(user)
+        try:
+            user = self.user_repo.create(user)
+        except IntegrityError:
+            self.db.rollback()
+            raise ConflictException("Username or email already exists")
 
-        self.db.add(DeveloperProfile(user_id=user.id))
-        self.db.commit()
+        try:
+            self.db.add(DeveloperProfile(user_id=user.id))
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            # User row already exists; a concurrent request may have created
+            # the profile — treat as conflict-free and return the user.
+            pass
 
         return user
 
     def authenticate(self, email: str, password: str) -> User:
         user = self.user_repo.get_by_email(email)
-        if user is None or not verify_password(password, user.password_hash):
+        if user is None:
+            raise InvalidCredentialsException("Invalid email or password")
+        if not user.password_hash:
+            # Signed up via Google/GitHub/LinkedIn — no password set.
+            raise InvalidCredentialsException(
+                "This account uses social login. Please sign in with your provider."
+            )
+        if not verify_password(password, user.password_hash):
             raise InvalidCredentialsException("Invalid email or password")
         return user
 

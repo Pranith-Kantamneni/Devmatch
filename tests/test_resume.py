@@ -115,3 +115,77 @@ class TestResumeParserService:
             assert resp.status_code == status.HTTP_201_CREATED
         profile = client.get("/api/v1/profiles/me", headers=headers).json()
         assert len(profile["skills"]) == 2
+
+
+class TestMultiProjectParsing:
+    """Regression tests: resumes without blank lines must still split entries."""
+
+    NO_BLANK_LINES = b"""John Doe
+john@example.com
+PROJECTS
+E-Commerce Platform | React, Node.js, MongoDB | github.com/john/shop
+- Built cart and payments with Stripe
+- Deployed with Docker on AWS
+Chat Application | Socket.io, Express, Redis
+- Real-time messaging for 10k users
+- Tech: Socket.io, Express, Redis
+Portfolio Website
+Personal site with blog. Built with Next.js and Tailwind.
+"""
+
+    def test_all_projects_parsed_without_blank_lines(self):
+        svc = ResumeParserService()
+        result = svc.parse(self.NO_BLANK_LINES, "resume.txt")
+        titles = [p.title for p in result.projects]
+        assert titles == [
+            "E-Commerce Platform",
+            "Chat Application",
+            "Portfolio Website",
+        ]
+
+    def test_project_tech_and_url_extracted(self):
+        svc = ResumeParserService()
+        result = svc.parse(self.NO_BLANK_LINES, "resume.txt")
+        shop = result.projects[0]
+        assert "React" in shop.skills
+        assert "MongoDB" in shop.skills
+        assert shop.url and "github.com/john/shop" in shop.url
+        chat = result.projects[1]
+        assert "Socket.io" in chat.skills or "Redis" in chat.skills
+        site = result.projects[2]
+        assert "Next.js" in site.skills or "Tailwind" in site.skills
+
+    def test_experience_splits_without_blank_lines(self):
+        svc = ResumeParserService()
+        result = svc.parse(
+            b"EXPERIENCE\nBackend Engineer at Acme, Jan 2021 - Present\n- Built APIs\n"
+            b"Frontend Engineer at Beta, Jun 2019 - Dec 2020\n- Built dashboards\n",
+            "resume.txt",
+        )
+        assert [(e.title, e.company) for e in result.experience] == [
+            ("Backend Engineer", "Acme"),
+            ("Frontend Engineer", "Beta"),
+        ]
+
+    def test_digit_skills_kept(self):
+        svc = ResumeParserService()
+        result = svc.parse(b"SKILLS\nPython, HTML5, React, OAuth2, C", "resume.txt")
+        names = {s.name for s in result.skills}
+        assert {"Python", "HTML5", "React", "OAuth2", "C"} <= names
+
+    def test_years_not_parsed_as_skills(self):
+        svc = ResumeParserService()
+        result = svc.parse(b"SKILLS\nPython, 2021, 3+ years, React", "resume.txt")
+        names = {s.name for s in result.skills}
+        assert "Python" in names and "React" in names
+        assert "2021" not in names
+        assert not any("years" in n for n in names)
+
+    def test_known_skills_recovered_without_skills_section(self):
+        svc = ResumeParserService()
+        result = svc.parse(
+            b"SUMMARY\nBackend engineer.\nEXPERIENCE\nBuilt services with Python and Docker.\n",
+            "resume.txt",
+        )
+        names = {s.name for s in result.skills}
+        assert "Python" in names and "Docker" in names

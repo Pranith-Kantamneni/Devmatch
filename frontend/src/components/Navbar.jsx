@@ -1,12 +1,24 @@
 import { NavLink, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Users, UsersRound, LogOut } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { House, CircleUserRound, Users, UsersRound, LogOut, MessageCircle } from 'lucide-react'
 import Logo from './Logo'
+import ThemeToggle from './ThemeToggle'
 import Avatar from './ui/Avatar'
 import { useAuth } from '../context/AuthContext'
+import { api } from '../api/client'
 
 export default function Navbar() {
-  const { user, logout } = useAuth()
+  const { user, logout, isAuthenticated } = useAuth()
   const navigate = useNavigate()
+  const [pendingChats, setPendingChats] = useState(0)
+
+  useEffect(() => {
+    if (!isAuthenticated) return
+    api
+      .chatOverview()
+      .then((o) => setPendingChats((o.incoming_requests || []).length))
+      .catch(() => {})
+  }, [isAuthenticated])
 
   const handleLogout = () => {
     logout()
@@ -16,34 +28,53 @@ export default function Navbar() {
   return (
     <header className="navbar">
       <div className="navbar-inner">
-        <NavLink to="/dashboard" className="navbar-brand">
+        <NavLink to="/home" className="navbar-brand">
           <Logo size={28} />
-          <span className="brand-name">DevMatch</span>
+          <span className="brand-name">Dev<span className="brand-accent">Match</span></span>
         </NavLink>
 
-        <nav className="navbar-links">
-          <NavLink to="/dashboard" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-            <LayoutDashboard size={16} />
+        <nav className="navbar-links" aria-label="Primary">
+          <NavLink to="/home" aria-label="Home" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+            <House size={16} />
+            <span>Home</span>
+          </NavLink>
+          <NavLink to="/dashboard" aria-label="My Profile" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+            <CircleUserRound size={16} />
             <span>My Profile</span>
           </NavLink>
-          <NavLink to="/teammates" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+          <NavLink to="/teammates" aria-label="Find Teammates" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
             <Users size={16} />
             <span>Find Teammates</span>
           </NavLink>
-          <NavLink to="/teams" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+          <NavLink to="/teams" aria-label="Teams" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
             <UsersRound size={16} />
             <span>Teams</span>
+          </NavLink>
+          <NavLink to="/messages" aria-label="Messages" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+            <MessageCircle size={16} />
+            <span>Messages</span>
+            {pendingChats > 0 && <span className="tab-count">{pendingChats}</span>}
           </NavLink>
         </nav>
 
         <div className="navbar-actions">
           <div className="navbar-user">
-            <Avatar name={user?.username || ''} size={32} />
-            <span className="navbar-username">{user?.username}</span>
+            {user ? (
+              <>
+                <Avatar name={user.username || ''} size={32} />
+                <span className="navbar-username">{user.username}</span>
+              </>
+            ) : (
+              <>
+                <div className="skeleton" style={{ width: 32, height: 32, borderRadius: '50%' }} />
+                <span className="skeleton" style={{ width: 70, height: 14 }} />
+              </>
+            )}
           </div>
-          <button className="nav-logout" onClick={handleLogout} title="Log out">
+          <button className="nav-logout" onClick={handleLogout} title="Log out" aria-label="Log out">
             <LogOut size={17} />
           </button>
+          <ThemeToggle />
         </div>
       </div>
     </header>

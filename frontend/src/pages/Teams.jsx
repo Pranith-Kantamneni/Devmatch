@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Link } from 'react-router-dom'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   Plus, Users, Inbox, Send, Search, MapPin, CheckCircle2, XCircle,
 } from 'lucide-react'
@@ -9,6 +9,7 @@ import Badge from '../components/ui/Badge'
 import Input from '../components/ui/Input'
 import EmptyState from '../components/ui/EmptyState'
 import Avatar from '../components/ui/Avatar'
+import CollegeSelect from '../components/CollegeSelect'
 import { api } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
@@ -76,29 +77,49 @@ function TeamCard({ project }) {
 export default function Teams() {
   const { user } = useAuth()
   const { toast } = useToast()
-  const [tab, setTab] = useState('discover')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const validTabs = ['discover', 'mine', 'applications', 'invitations']
+  const [tab, setTab] = useState(() => {
+    const q = searchParams.get('tab')
+    return validTabs.includes(q) ? q : 'discover'
+  })
   const [projects, setProjects] = useState([])
   const [applications, setApplications] = useState([])
   const [invitations, setInvitations] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [collegeFilter, setCollegeFilter] = useState('')
+  const [appliedFilters, setAppliedFilters] = useState({ q: '', college: '' })
+  const [visibleLimit, setVisibleLimit] = useState(20)
+  const [respondingId, setRespondingId] = useState(null)
+  const searchTimer = useRef(null)
+
+  // Debounce keystrokes into applied filters so we don't spam the API.
+  useEffect(() => {
+    clearTimeout(searchTimer.current)
+    searchTimer.current = setTimeout(() => {
+      setAppliedFilters({ q: search.trim(), college: collegeFilter.trim() })
+      setVisibleLimit(20)
+    }, 400)
+    return () => clearTimeout(searchTimer.current)
+  }, [search, collegeFilter])
 
   const loadDiscover = useCallback(async () => {
     setLoading(true)
     try {
-      const params = {}
-      if (search.trim()) params.q = search.trim()
-      if (collegeFilter.trim()) params.college = collegeFilter.trim()
+      const params = { limit: visibleLimit }
+      if (appliedFilters.q) params.q = appliedFilters.q
+      if (appliedFilters.college) params.college = appliedFilters.college
       setProjects(await api.listTeamProjects(params))
     } catch (err) {
       toast(err.message, 'error')
     } finally {
       setLoading(false)
     }
-  }, [toast, search, collegeFilter])
+  }, [toast, appliedFilters, visibleLimit])
 
   const loadMine = useCallback(async () => {
+    if (!user?.id) return
     setLoading(true)
     try {
       const all = await api.listTeamProjects({ limit: 100 })
@@ -112,25 +133,41 @@ export default function Teams() {
     } finally {
       setLoading(false)
     }
-  }, [toast, user.id])
+  }, [toast, user?.id])
+
+  // Keep tab badges fresh even before visiting those tabs.
+  useEffect(() => {
+    api.listMyApplications().then(setApplications).catch(() => {})
+    api.listMyInvitations().then(setInvitations).catch(() => {})
+  }, [])
 
   useEffect(() => {
     if (tab === 'discover') loadDiscover()
     else loadMine()
   }, [tab, loadDiscover, loadMine])
 
+  const switchTab = (next) => {
+    setTab(next)
+    setSearchParams(next === 'discover' ? {} : { tab: next }, { replace: true })
+  }
+
   const handleRespondInvitation = async (invId, accept) => {
+    if (respondingId) return
+    setRespondingId(invId)
     try {
       if (accept) await api.acceptInvitation(invId)
       else await api.rejectInvitation(invId)
       toast(accept ? 'Invitation accepted — welcome to the team' : 'Invitation rejected')
-      loadMine()
+      const invs = await api.listMyInvitations()
+      setInvitations(invs)
     } catch (err) {
       toast(err.message, 'error')
+    } finally {
+      setRespondingId(null)
     }
   }
 
-  const myTeams = projects.filter((p) => p.creator_id === user.id)
+  const myTeams = projects.filter((p) => p.creator_id === user?.id)
 
   return (
     <div className="page">
@@ -143,19 +180,19 @@ export default function Teams() {
       </div>
 
       <div className="tabs">
-        <button className={`tab ${tab === 'discover' ? 'active' : ''}`} onClick={() => setTab('discover')}>
+        <button className={`tab ${tab === 'discover' ? 'active' : ''}`} onClick={() => switchTab('discover')}>
           <Search size={15} /> Discover
         </button>
-        <button className={`tab ${tab === 'mine' ? 'active' : ''}`} onClick={() => setTab('mine')}>
+        <button className={`tab ${tab === 'mine' ? 'active' : ''}`} onClick={() => switchTab('mine')}>
           <Users size={15} /> My teams
         </button>
-        <button className={`tab ${tab === 'applications' ? 'active' : ''}`} onClick={() => setTab('applications')}>
+        <button className={`tab ${tab === 'applications' ? 'active' : ''}`} onClick={() => switchTab('applications')}>
           <Send size={15} /> Applications
           {applications.filter((a) => a.status === 'pending').length > 0 && (
             <span className="tab-count">{applications.filter((a) => a.status === 'pending').length}</span>
           )}
         </button>
-        <button className={`tab ${tab === 'invitations' ? 'active' : ''}`} onClick={() => setTab('invitations')}>
+        <button className={`tab ${tab === 'invitations' ? 'active' : ''}`} onClick={() => switchTab('invitations')}>
           <Inbox size={15} /> Invitations
           {invitations.filter((i) => i.status === 'pending').length > 0 && (
             <span className="tab-count">{invitations.filter((i) => i.status === 'pending').length}</span>
@@ -164,11 +201,22 @@ export default function Teams() {
       </div>
 
       {tab === 'discover' && (
-        <div className="teams-filters">
-          <Input placeholder="Search teams..." value={search} onChange={(e) => setSearch(e.target.value)} />
-          <Input placeholder="Filter by college..." value={collegeFilter} onChange={(e) => setCollegeFilter(e.target.value)} />
-          <Button variant="secondary" onClick={loadDiscover}>Search</Button>
-        </div>
+        <form
+          className="teams-filters"
+          onSubmit={(e) => {
+            e.preventDefault()
+            setAppliedFilters({ q: search.trim(), college: collegeFilter.trim() })
+          }}
+        >
+          <Input label="Search teams" placeholder="Search teams..." value={search} onChange={(e) => setSearch(e.target.value)} />
+          <CollegeSelect
+            label="College"
+            placeholder="Filter by college…"
+            value={collegeFilter ? { college_id: null, college: collegeFilter } : null}
+            onChange={(v) => setCollegeFilter(v?.college || '')}
+          />
+          <Button variant="secondary" type="submit">Search</Button>
+        </form>
       )}
 
       {loading ? (
@@ -191,9 +239,18 @@ export default function Teams() {
           />
         </Card>
       ) : tab === 'discover' ? (
-        <div className="dev-grid">
-          {projects.map((p) => <TeamCard key={p.id} project={p} />)}
-        </div>
+        <>
+          <div className="dev-grid">
+            {projects.map((p) => <TeamCard key={p.id} project={p} />)}
+          </div>
+          {projects.length >= visibleLimit && (
+            <div className="load-more-wrap">
+              <Button variant="secondary" onClick={() => setVisibleLimit((n) => n + 20)}>
+                Load more teams
+              </Button>
+            </div>
+          )}
+        </>
       ) : tab === 'mine' && myTeams.length === 0 ? (
         <Card>
           <EmptyState
@@ -218,9 +275,14 @@ export default function Teams() {
               <div key={a.id} className="request-item">
                 <div className="request-main">
                   <Link to={`/teams/${a.team_project_id}`} className="request-title">
-                    Team #{a.team_project_id}
+                    {a.project_title || `Team #${a.team_project_id}`}
                   </Link>
                   {a.message && <p className="request-msg">"{a.message}"</p>}
+                  {a.status === 'pending' && (
+                    <Link to={`/teams/${a.team_project_id}`} className="fit-link">
+                      Chat with the creator →
+                    </Link>
+                  )}
                 </div>
                 {statusBadge(a.status)}
               </div>
@@ -245,10 +307,10 @@ export default function Teams() {
                 </div>
                 {inv.status === 'pending' ? (
                   <div className="request-actions">
-                    <Button size="sm" onClick={() => handleRespondInvitation(inv.id, true)}>
+                    <Button size="sm" disabled={respondingId === inv.id} onClick={() => handleRespondInvitation(inv.id, true)}>
                       <CheckCircle2 size={14} /> Accept
                     </Button>
-                    <Button size="sm" variant="secondary" onClick={() => handleRespondInvitation(inv.id, false)}>
+                    <Button size="sm" variant="secondary" disabled={respondingId === inv.id} onClick={() => handleRespondInvitation(inv.id, false)}>
                       <XCircle size={14} /> Decline
                     </Button>
                   </div>

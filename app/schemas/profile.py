@@ -8,23 +8,25 @@ from app.schemas.skill import SkillBrief, UserSkillResponse
 
 class ProfileUpdate(BaseModel):
     full_name: str | None = Field(default=None, max_length=100)
-    bio: str | None = None
+    bio: str | None = Field(default=None, max_length=2000)
     location: str | None = Field(default=None, max_length=100)
     education: str | None = Field(default=None, max_length=255)
     college: str | None = Field(default=None, max_length=255)
+    college_id: str | None = Field(default=None, max_length=100)
+    branch: str | None = Field(default=None, max_length=100)
     experience_level: ExperienceLevel | None = None
     github_url: str | None = Field(default=None, max_length=255)
     linkedin_url: str | None = Field(default=None, max_length=255)
     portfolio_url: str | None = Field(default=None, max_length=255)
     availability: bool | None = None
-    collaboration_preferences: str | None = None
+    collaboration_preferences: str | None = Field(default=None, max_length=1000)
 
 
 class ProjectAdd(BaseModel):
     title: str = Field(min_length=1, max_length=200)
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=2000)
     url: str | None = Field(default=None, max_length=255)
-    skill_names: list[str] = Field(default_factory=list)
+    skill_names: list[str] = Field(default_factory=list, max_length=30)
 
 
 class ProjectResponse(BaseModel):
@@ -44,6 +46,8 @@ class ProfileResponse(BaseModel):
     location: str | None
     education: str | None
     college: str | None
+    college_id: str | None = None
+    branch: str | None = None
     experience_level: ExperienceLevel | None
     github_url: str | None
     linkedin_url: str | None
@@ -60,11 +64,14 @@ class ProfileResponse(BaseModel):
 
 class PublicProfileResponse(BaseModel):
     user_id: int
+    username: str | None = None
     full_name: str | None
     bio: str | None
     location: str | None
     education: str | None
     college: str | None
+    college_id: str | None = None
+    branch: str | None = None
     experience_level: ExperienceLevel | None
     github_url: str | None
     linkedin_url: str | None

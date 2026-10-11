@@ -1,3 +1,4 @@
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models.project import Project, ProjectSkill
@@ -13,12 +14,21 @@ class SkillRepository:
 
     def get_or_create_by_name(self, name: str, category) -> Skill:
         skill = self.get_by_name(name)
-        if skill is None:
+        if skill is not None:
+            return skill
+        try:
             skill = Skill(name=name, category=category)
             self.db.add(skill)
             self.db.commit()
             self.db.refresh(skill)
-        return skill
+            return skill
+        except IntegrityError:
+            # Lost a concurrent insert race — reuse the winner's row.
+            self.db.rollback()
+            existing = self.get_by_name(name)
+            if existing is not None:
+                return existing
+            raise
 
     def add_user_skill(
         self,
@@ -78,10 +88,34 @@ class SkillRepository:
         )
 
     def add_project_skill(self, project_id: int, skill_id: int) -> ProjectSkill:
+        existing = (
+            self.db.query(ProjectSkill)
+            .filter(
+                ProjectSkill.project_id == project_id,
+                ProjectSkill.skill_id == skill_id,
+            )
+            .first()
+        )
+        if existing is not None:
+            return existing
         project_skill = ProjectSkill(project_id=project_id, skill_id=skill_id)
-        self.db.add(project_skill)
-        self.db.commit()
-        self.db.refresh(project_skill)
+        try:
+            self.db.add(project_skill)
+            self.db.commit()
+            self.db.refresh(project_skill)
+        except IntegrityError:
+            self.db.rollback()
+            existing = (
+                self.db.query(ProjectSkill)
+                .filter(
+                    ProjectSkill.project_id == project_id,
+                    ProjectSkill.skill_id == skill_id,
+                )
+                .first()
+            )
+            if existing is not None:
+                return existing
+            raise
         return project_skill
 
     def remove_project(self, project_id: int, user_id: int) -> bool:

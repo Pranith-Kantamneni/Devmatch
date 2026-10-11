@@ -9,6 +9,7 @@ import Button from '../components/ui/Button'
 import Badge from '../components/ui/Badge'
 import { api } from '../api/client'
 import { useToast } from '../context/ToastContext'
+import CollegeSelect from '../components/CollegeSelect'
 
 const SKILL_CATEGORIES = [
   { value: 'language', label: 'Language' },
@@ -32,6 +33,7 @@ export default function TeamForm({ mode }) {
     poster_url: '',
     max_members: 4,
     college: '',
+    college_id: null,
     require_same_college: false,
   })
   const [skillName, setSkillName] = useState('')
@@ -55,6 +57,7 @@ export default function TeamForm({ mode }) {
           poster_url: p.poster_url || '',
           max_members: p.max_members,
           college: p.college || '',
+          college_id: p.college_id || null,
           require_same_college: p.require_same_college,
         })
       })
@@ -86,8 +89,23 @@ export default function TeamForm({ mode }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (form.require_same_college && !form.college.trim()) {
+    if (!form.title.trim()) {
+      toast('Give your team a name', 'error')
+      return
+    }
+    if (form.require_same_college && !form.college.trim() && !form.college_id) {
       toast('College is required when same-college is enabled', 'error')
+      return
+    }
+    let maxMembers = parseInt(form.max_members, 10)
+    if (!Number.isFinite(maxMembers)) {
+      toast('Enter a valid team size (2–50)', 'error')
+      return
+    }
+    maxMembers = Math.min(50, Math.max(2, maxMembers))
+    const poster = form.poster_url.trim()
+    if (poster && !/^https?:\/\/.+\..+/.test(poster)) {
+      toast('Poster URL must start with http(s)://', 'error')
       return
     }
     setSaving(true)
@@ -97,9 +115,10 @@ export default function TeamForm({ mode }) {
         description: form.description.trim() || null,
         tech_stack: form.tech_stack_input.split(',').map((t) => t.trim()).filter(Boolean),
         required_skills: form.required_skills,
-        poster_url: form.poster_url.trim() || null,
-        max_members: parseInt(form.max_members, 10),
+        poster_url: poster || null,
+        max_members: maxMembers,
         college: form.college.trim() || null,
+        college_id: form.college_id || null,
         require_same_college: form.require_same_college,
       }
       if (isEdit) {
@@ -151,7 +170,17 @@ export default function TeamForm({ mode }) {
             <div className="review-form">
               <Input label="Team name" value={form.title} onChange={set('title')} placeholder="e.g. AI Builders Hackathon Team" required maxLength={200} />
               <Textarea label="Description" value={form.description} onChange={set('description')} placeholder="What will you build? What is the goal?" />
-              <Input label="Poster / image URL (optional)" value={form.poster_url} onChange={set('poster_url')} placeholder="https://..." />
+              <Input label="Poster / image URL (optional)" value={form.poster_url} onChange={set('poster_url')} placeholder="https://..." hint="Shown at the top of your team page" />
+              {form.poster_url.trim() && /^https?:\/\/.+\..+/.test(form.poster_url.trim()) && (
+                <div className="poster-preview">
+                  <img
+                    src={form.poster_url.trim()}
+                    alt="Team poster preview"
+                    loading="lazy"
+                    onError={(e) => { e.currentTarget.style.display = 'none' }}
+                  />
+                </div>
+              )}
               <Input label="Tech stack (comma-separated)" value={form.tech_stack_input} onChange={set('tech_stack_input')} placeholder="e.g. Python, React, PostgreSQL" hint="Free-form technologies used by the team" />
             </div>
           </Card>
@@ -168,6 +197,7 @@ export default function TeamForm({ mode }) {
               <input
                 className="input"
                 placeholder="e.g. Python"
+                aria-label="Required skill name"
                 value={skillName}
                 onChange={(e) => setSkillName(e.target.value)}
                 onKeyDown={(e) => {
@@ -177,7 +207,7 @@ export default function TeamForm({ mode }) {
                   }
                 }}
               />
-              <select className="input select team-skill-cat" value={skillCategory} onChange={(e) => setSkillCategory(e.target.value)}>
+              <select className="input select team-skill-cat" aria-label="Skill category" value={skillCategory} onChange={(e) => setSkillCategory(e.target.value)}>
                 {SKILL_CATEGORIES.map((c) => (
                   <option key={c.value} value={c.value}>{c.label}</option>
                 ))}
@@ -223,7 +253,12 @@ export default function TeamForm({ mode }) {
                 onChange={set('max_members')}
                 required
               />
-              <Input label="College (optional)" value={form.college} onChange={set('college')} placeholder="e.g. MIT" maxLength={255} />
+              <CollegeSelect
+                label="College (optional)"
+                value={form.college ? { college_id: form.college_id, college: form.college } : null}
+                onChange={(v) => setForm((f) => ({ ...f, college: v?.college || '', college_id: v?.college_id || null }))}
+                hint="Required only when same-college is enabled"
+              />
               <label className="toggle-row">
                 <input type="checkbox" checked={form.require_same_college} onChange={set('require_same_college')} />
                 <span className="toggle-label">
@@ -236,7 +271,7 @@ export default function TeamForm({ mode }) {
         </div>
 
         <div className="review-footer">
-          <Button type="button" variant="ghost" onClick={() => navigate(isEdit ? `/teams/${id}` : '/teams')}>
+          <Button type="button" variant="ghost" disabled={saving} onClick={() => navigate(isEdit ? `/teams/${id}` : '/teams')}>
             Cancel
           </Button>
           <Button type="submit" loading={saving}>

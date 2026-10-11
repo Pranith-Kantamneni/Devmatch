@@ -48,6 +48,8 @@ def to_profile_response(profile: DeveloperProfile) -> ProfileResponse:
         location=profile.location,
         education=profile.education,
         college=profile.college,
+        college_id=profile.college_id,
+        branch=profile.branch,
         experience_level=profile.experience_level,
         github_url=profile.github_url,
         linkedin_url=profile.linkedin_url,
@@ -64,11 +66,14 @@ def to_profile_response(profile: DeveloperProfile) -> ProfileResponse:
 def to_public_profile_response(profile: DeveloperProfile) -> PublicProfileResponse:
     return PublicProfileResponse(
         user_id=profile.user_id,
+        username=getattr(profile.user, "username", None),
         full_name=profile.full_name,
         bio=profile.bio,
         location=profile.location,
         education=profile.education,
         college=profile.college,
+        college_id=profile.college_id,
+        branch=profile.branch,
         experience_level=profile.experience_level,
         github_url=profile.github_url,
         linkedin_url=profile.linkedin_url,

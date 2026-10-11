@@ -24,6 +24,8 @@ class ParsedEducation(BaseModel):
 class ParsedProject(BaseModel):
     title: str | None = None
     description: str | None = None
+    skills: list[str] = Field(default_factory=list)
+    url: str | None = None
 
 
 class ParsedResume(BaseModel):

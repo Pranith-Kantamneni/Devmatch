@@ -74,14 +74,43 @@ def parse_resume(
     current_user: User = Depends(get_current_user),
 ):
     filename = file.filename or ""
-    if not filename.lower().endswith((".pdf", ".docx", ".doc", ".txt", ".md")):
+    lowered = filename.lower()
+    if not lowered.endswith((".pdf", ".docx", ".txt", ".md")):
         raise ValidationException("Unsupported file type. Upload a PDF, DOCX, or TXT resume.")
+    if lowered.endswith(".doc") and not lowered.endswith(".docx"):
+        raise ValidationException(
+            "Legacy .doc files are not supported. Please upload PDF, DOCX, or TXT."
+        )
 
-    content = file.file.read()
-    if len(content) > MAX_RESUME_SIZE:
-        raise ValidationException("File is too large. Maximum size is 10MB.")
+    # Stream with an early abort instead of reading an unbounded body into RAM.
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        while True:
+            chunk = file.file.read(256 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_RESUME_SIZE:
+                raise ValidationException("File is too large. Maximum size is 10MB.")
+            chunks.append(chunk)
+    finally:
+        try:
+            file.file.close()
+        except Exception:
+            pass
+    content = b"".join(chunks)
+    if not content.strip():
+        raise ValidationException("Resume file is empty.")
 
-    return ResumeParserService().parse(content, filename)
+    try:
+        return ResumeParserService().parse(content, filename)
+    except ValidationException:
+        raise
+    except Exception:
+        raise ValidationException(
+            "Could not parse this resume file. Try a text-based PDF, DOCX, or TXT."
+        )
 
 
 @router.post(

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from app.core import cache as result_cache
 from app.core.config import Settings
 from app.core.exceptions import (
     ConflictException,
@@ -14,6 +15,14 @@ from app.repositories.profile_repository import ProfileRepository
 from app.repositories.skill_repository import SkillRepository
 from app.repositories.team_project_repository import TeamProjectRepository
 from app.repositories.user_repository import UserRepository
+from app.schemas.chat import (
+    ApplicationMessageResponse,
+    PollCreate,
+    PollOptionResponse,
+    PollResponse,
+    PollVote,
+    TeamMessageResponse,
+)
 from app.schemas.skill import SkillBrief
 from app.schemas.team_project import (
     TeamApplicationResponse,
@@ -23,8 +32,11 @@ from app.schemas.team_project import (
     TeamProjectDetailResponse,
     TeamProjectResponse,
     TeamProjectUpdate,
+    TeamSkillGaps,
+    SkillGapEntry,
 )
 from app.services.embedding_service import EmbeddingService
+from app.services.matching_service import normalize_skill_name
 
 
 class TeamProjectService:
@@ -43,14 +55,19 @@ class TeamProjectService:
         self.profile_repo = ProfileRepository(db)
 
     def create_project(self, creator_id: int, data: TeamProjectCreate) -> TeamProjectResponse:
+        title = (data.title or "").strip()
+        if not title:
+            raise ValidationException("Project title must not be blank")
+        college_id, college = self._resolve_college(data.college_id, data.college)
         project = TeamProject(
             creator_id=creator_id,
-            title=data.title.strip(),
+            title=title,
             description=(data.description.strip() or None) if data.description else None,
             tech_stack=self._normalize_tech_stack(data.tech_stack),
             poster_url=(data.poster_url.strip() or None) if data.poster_url else None,
             max_members=data.max_members,
-            college=self._normalize_college(data.college),
+            college=college,
+            college_id=college_id,
             require_same_college=data.require_same_college,
         )
         project = self.team_repo.create(project)
@@ -84,7 +101,9 @@ class TeamProjectService:
         update_data = data.model_dump(exclude_unset=True)
 
         if "title" in update_data and update_data["title"] is not None:
-            update_data["title"] = update_data["title"].strip()
+            update_data["title"] = (update_data["title"] or "").strip()
+            if not update_data["title"]:
+                raise ValidationException("Project title must not be blank")
         if "description" in update_data:
             update_data["description"] = (
                 update_data["description"].strip() or None
@@ -95,8 +114,13 @@ class TeamProjectService:
             update_data["poster_url"] = (
                 update_data["poster_url"].strip() or None
             ) if update_data["poster_url"] else None
-        if "college" in update_data:
-            update_data["college"] = self._normalize_college(update_data["college"])
+        if "college" in update_data or "college_id" in update_data:
+            cid, display = self._resolve_college(
+                update_data.pop("college_id", None),
+                update_data.pop("college", None),
+            )
+            update_data["college_id"] = cid
+            update_data["college"] = display
 
         new_max = update_data.get("max_members")
         if new_max is not None:
@@ -107,9 +131,11 @@ class TeamProjectService:
                 )
 
         new_flag = update_data.get("require_same_college")
-        if new_flag is True:
+        effective_flag = new_flag if new_flag is not None else project.require_same_college
+        if effective_flag is True:
             college = update_data.get("college", project.college)
-            if not (college or "").strip():
+            college_id = update_data.get("college_id", project.college_id)
+            if not (college or "").strip() and not (college_id or "").strip():
                 raise ValidationException(
                     "college is required when require_same_college is true"
                 )
@@ -127,7 +153,10 @@ class TeamProjectService:
         self, requester_id: int, project_id: int, name: str, category
     ) -> TeamProjectResponse:
         project = self._get_owned_project(requester_id, project_id)
-        skill = self.skill_repo.get_or_create_by_name(name.strip().lower(), category)
+        cleaned = (name or "").strip().lower()
+        if not cleaned:
+            raise ValidationException("Skill name must not be blank")
+        skill = self.skill_repo.get_or_create_by_name(cleaned, category)
         existing = self.team_repo.get_required_skills(project_id)
         if any(link.skill_id == skill.id for link in existing):
             raise ConflictException(f"Skill '{skill.name}' is already required")
@@ -139,7 +168,9 @@ class TeamProjectService:
         self, requester_id: int, project_id: int, skill_id: int
     ) -> TeamProjectResponse:
         project = self._get_owned_project(requester_id, project_id)
-        self.team_repo.remove_required_skill(project_id, skill_id)
+        removed = self.team_repo.remove_required_skill(project_id, skill_id)
+        if not removed:
+            raise NotFoundException("Required skill not found on this project")
         self._refresh_embedding(project_id)
         return self.to_response(self.team_repo.get_by_id(project.id))
 
@@ -163,14 +194,23 @@ class TeamProjectService:
             application = self.team_repo.reset_application(existing, message)
         else:
             application = self.team_repo.create_application(project_id, user_id, message)
-        return self._to_application_response(application)
+        norms, display = self._required_norms(project_id)
+        return self._to_application_response(
+            application, fit=self._fit_for_user(user_id, norms, display)
+        )
 
     def list_applications(
         self, requester_id: int, project_id: int, status: TeamRequestStatus | None = None
     ) -> list[TeamApplicationResponse]:
         self._get_owned_project(requester_id, project_id)
         applications = self.team_repo.list_applications(project_id, status=status)
-        return [self._to_application_response(a) for a in applications]
+        norms, display = self._required_norms(project_id)
+        return [
+            self._to_application_response(
+                a, fit=self._fit_for_user(a.user_id, norms, display)
+            )
+            for a in applications
+        ]
 
     def accept_application(
         self, requester_id: int, project_id: int, application_id: int
@@ -196,7 +236,11 @@ class TeamProjectService:
             self.team_repo.set_invitation_status(
                 pending_invite, TeamRequestStatus.ACCEPTED
             )
-        return self._to_application_response(application)
+        norms, display = self._required_norms(project_id)
+        return self._to_application_response(
+            application,
+            fit=self._fit_for_user(application.user_id, norms, display),
+        )
 
     def reject_application(
         self, requester_id: int, project_id: int, application_id: int
@@ -210,7 +254,11 @@ class TeamProjectService:
         application = self.team_repo.set_application_status(
             application, TeamRequestStatus.REJECTED
         )
-        return self._to_application_response(application)
+        norms, display = self._required_norms(project_id)
+        return self._to_application_response(
+            application,
+            fit=self._fit_for_user(application.user_id, norms, display),
+        )
 
     def invite(
         self, requester_id: int, project_id: int, invitee_id: int, message: str | None
@@ -300,6 +348,208 @@ class TeamProjectService:
             invitation, invitee.username if invitee else None
         )
 
+    # -- chat ------------------------------------------------------
+
+    def _require_membership(self, project_id: int, user_id: int):
+        project = self._get_project_or_404(project_id)
+        is_member = self.team_repo.get_membership(project_id, user_id) is not None
+        if not is_member and project.creator_id != user_id:
+            raise ForbiddenException("Only team members can access the team chat")
+        return project
+
+    def _require_chat_unlocked(self, project_id: int, user_id: int):
+        """Team chat (messages + polls) opens once a second member joins."""
+        project = self._require_membership(project_id, user_id)
+        if self.team_repo.count_members(project_id) < 2:
+            raise ForbiddenException(
+                "Team chat unlocks once a second member joins the team"
+            )
+        return project
+
+    def list_team_messages(
+        self, requester_id: int, project_id: int, limit: int, before_id: int | None
+    ) -> list[TeamMessageResponse]:
+        self._require_chat_unlocked(project_id, requester_id)
+        return [
+            self._to_team_message_response(m)
+            for m in self.team_repo.list_team_messages(project_id, limit, before_id)
+        ]
+
+    def post_team_message(
+        self, requester_id: int, project_id: int, body: str
+    ) -> TeamMessageResponse:
+        self._require_chat_unlocked(project_id, requester_id)
+        sender = self.user_repo.get_by_id(requester_id)
+        message = self.team_repo.create_team_message(
+            project_id,
+            requester_id,
+            sender.username if sender else "Someone",
+            self._clean_message_body(body),
+        )
+        return self._to_team_message_response(message)
+
+    def _require_application_thread(
+        self, requester_id: int, project_id: int, application_id: int
+    ):
+        project = self._get_project_or_404(project_id)
+        application = self.team_repo.get_application_by_id(application_id)
+        if application is None or application.team_project_id != project_id:
+            raise NotFoundException("Application not found")
+        if requester_id != project.creator_id and requester_id != application.user_id:
+            raise ForbiddenException("Only the applicant and creator can view this chat")
+        return application
+
+    def list_application_messages(
+        self,
+        requester_id: int,
+        project_id: int,
+        application_id: int,
+        limit: int,
+        before_id: int | None,
+    ) -> list[ApplicationMessageResponse]:
+        self._require_application_thread(requester_id, project_id, application_id)
+        return [
+            self._to_application_message_response(m)
+            for m in self.team_repo.list_application_messages(
+                application_id, limit, before_id
+            )
+        ]
+
+    def post_application_message(
+        self, requester_id: int, project_id: int, application_id: int, body: str
+    ) -> ApplicationMessageResponse:
+        application = self._require_application_thread(
+            requester_id, project_id, application_id
+        )
+        sender = self.user_repo.get_by_id(requester_id)
+        message = self.team_repo.create_application_message(
+            project_id,
+            application.id,
+            requester_id,
+            sender.username if sender else "Someone",
+            self._clean_message_body(body),
+        )
+        return self._to_application_message_response(message)
+
+    @staticmethod
+    def _clean_message_body(body: str | None) -> str:
+        cleaned = (body or "").strip()
+        if not cleaned:
+            raise ValidationException("Message must not be empty")
+        if len(cleaned) > 2000:
+            raise ValidationException("Message is too long (max 2000 characters)")
+        return cleaned
+
+    @staticmethod
+    def _to_team_message_response(message) -> TeamMessageResponse:
+        return TeamMessageResponse(
+            id=message.id,
+            team_project_id=message.team_project_id,
+            sender_id=message.sender_id,
+            sender_username=message.sender_username or "Someone",
+            body=message.body,
+            created_at=message.created_at,
+        )
+
+    @staticmethod
+    def _to_application_message_response(message) -> ApplicationMessageResponse:
+        return ApplicationMessageResponse(
+            id=message.id,
+            team_project_id=message.team_project_id,
+            application_id=message.application_id,
+            sender_id=message.sender_id,
+            sender_username=message.sender_username or "Someone",
+            body=message.body,
+            created_at=message.created_at,
+        )
+
+    # -- polls -------------------------------------------------------
+
+    def list_polls(self, requester_id: int, project_id: int) -> list[PollResponse]:
+        self._require_chat_unlocked(project_id, requester_id)
+        polls = self.team_repo.list_polls(project_id)
+        return [self._to_poll_response(p, requester_id) for p in polls]
+
+    def create_poll(
+        self, requester_id: int, project_id: int, data: PollCreate
+    ) -> PollResponse:
+        self._require_chat_unlocked(project_id, requester_id)
+        question = (data.question or "").strip()
+        if not question:
+            raise ValidationException("Poll question must not be empty")
+        seen: set[str] = set()
+        options: list[str] = []
+        for raw in data.options or []:
+            text = (raw or "").strip()
+            if not text or len(text) > 120:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            options.append(text)
+        if len(options) < 2:
+            raise ValidationException("A poll needs at least 2 different options")
+        sender = self.user_repo.get_by_id(requester_id)
+        poll = self.team_repo.create_poll(
+            project_id,
+            requester_id,
+            sender.username if sender else "Someone",
+            question,
+            options[:6],
+        )
+        return self._to_poll_response(poll, requester_id)
+
+    def vote_poll(
+        self, requester_id: int, project_id: int, poll_id: int, data: PollVote
+    ) -> PollResponse:
+        self._require_chat_unlocked(project_id, requester_id)
+        poll = self._get_poll_or_404(project_id, poll_id)
+        if poll.is_closed:
+            raise ValidationException("This poll is closed")
+        if not any(o.id == data.option_id for o in poll.options):
+            raise ValidationException("Unknown poll option")
+        self.team_repo.cast_vote(poll_id, data.option_id, requester_id)
+        return self._to_poll_response(
+            self.team_repo.get_poll(poll_id), requester_id
+        )
+
+    def close_poll(
+        self, requester_id: int, project_id: int, poll_id: int
+    ) -> PollResponse:
+        project = self._require_chat_unlocked(project_id, requester_id)
+        poll = self._get_poll_or_404(project_id, poll_id)
+        if requester_id != project.creator_id and requester_id != poll.creator_id:
+            raise ForbiddenException("Only the team creator or poll creator can close it")
+        return self._to_poll_response(
+            self.team_repo.close_poll(poll), requester_id
+        )
+
+    def _get_poll_or_404(self, project_id: int, poll_id: int):
+        poll = self.team_repo.get_poll(poll_id)
+        if poll is None or poll.team_project_id != project_id:
+            raise NotFoundException("Poll not found")
+        return poll
+
+    def _to_poll_response(self, poll, voter_id: int) -> PollResponse:
+        counts = self.team_repo.vote_counts(poll.id)
+        options = sorted(poll.options, key=lambda o: o.position)
+        return PollResponse(
+            id=poll.id,
+            team_project_id=poll.team_project_id,
+            creator_id=poll.creator_id,
+            creator_username=poll.creator_username or "Someone",
+            question=poll.question,
+            is_closed=poll.is_closed,
+            created_at=poll.created_at,
+            total_votes=sum(counts.values()),
+            options=[
+                PollOptionResponse(id=o.id, text=o.text, votes=counts.get(o.id, 0))
+                for o in options
+            ],
+            my_option_id=self.team_repo.voter_option(poll.id, voter_id),
+        )
+
     def remove_member(
         self, requester_id: int, project_id: int, target_user_id: int
     ) -> None:
@@ -322,6 +572,8 @@ class TeamProjectService:
         self.team_repo.remove_member(membership)
 
     def to_response(self, project) -> TeamProjectResponse:
+        if project is None:
+            raise NotFoundException("Team project not found")
         required = self.team_repo.get_required_skills(project.id)
         member_count = self.team_repo.count_members(project.id)
         return TeamProjectResponse(
@@ -334,6 +586,7 @@ class TeamProjectService:
             max_members=project.max_members,
             member_count=member_count,
             college=project.college,
+            college_id=project.college_id,
             require_same_college=project.require_same_college,
             required_skills=[
                 SkillBrief(id=link.skill.id, name=link.skill.name, category=link.skill.category)
@@ -360,6 +613,7 @@ class TeamProjectService:
         is_creator = viewer_id is not None and project.creator_id == viewer_id
         is_member = False
         application_status = None
+        application_id = None
         invitation_status = None
         if viewer_id is not None:
             is_member = (
@@ -367,6 +621,7 @@ class TeamProjectService:
             )
             application = self.team_repo.get_application(project.id, viewer_id)
             application_status = application.status if application else None
+            application_id = application.id if application else None
             invitation = self.team_repo.get_invitation(project.id, viewer_id)
             invitation_status = invitation.status if invitation else None
 
@@ -376,7 +631,73 @@ class TeamProjectService:
             is_creator=is_creator,
             is_member=is_member,
             application_status=application_status,
+            application_id=application_id,
             invitation_status=invitation_status,
+        )
+
+    def get_skill_gaps(
+        self, requester_id: int, project_id: int
+    ) -> TeamSkillGaps:
+        """Which required skills the current roster covers — the hiring checklist."""
+        project = self._get_owned_project(requester_id, project_id)
+        norms, display = self._required_norms(project_id)
+        memberships = self.team_repo.list_members(project_id)
+        member_ids = [m.user_id for m in memberships] + [project.creator_id]
+
+        covered_count: dict[str, int] = {norm: 0 for norm in norms}
+        for user_id in member_ids:
+            for norm in self._user_skill_norms(user_id):
+                if norm in covered_count:
+                    covered_count[norm] += 1
+
+        covered = sorted(display[n] for n, c in covered_count.items() if c > 0)
+        uncovered = sorted(display[n] for n, c in covered_count.items() if c == 0)
+        return TeamSkillGaps(
+            total_required=len(norms),
+            covered_skills=covered,
+            uncovered_skills=uncovered,
+            coverage=round(len(covered) / len(norms), 4) if norms else 0.0,
+            by_skill=[
+                SkillGapEntry(skill=display[n], covered_by_members=covered_count[n])
+                for n in sorted(norms, key=lambda n: (covered_count[n], display[n].lower()))
+            ],
+        )
+
+    def _required_norms(self, project_id: int) -> tuple[set[str], dict[str, str]]:
+        """Required skills + tech stack as (normalized set, norm → display name)."""
+        project = self.team_repo.get_by_id(project_id)
+        names = [link.skill.name for link in self.team_repo.get_required_skills(project_id)]
+        if project and project.tech_stack:
+            names.extend(project.tech_stack)
+        display: dict[str, str] = {}
+        for name in names:
+            if not (name or "").strip():
+                continue
+            display.setdefault(normalize_skill_name(name), name.strip())
+        return set(display.keys()), display
+
+    def _user_skill_norms(self, user_id: int) -> set[str]:
+        norms = {
+            normalize_skill_name(us.skill.name)
+            for us in self.profile_repo.get_user_skills(user_id)
+            if us.skill and us.skill.name
+        }
+        for portfolio_project in self.profile_repo.get_user_projects(user_id):
+            for link in portfolio_project.skills or []:
+                skill = getattr(link, "skill", None)
+                if skill is not None and skill.name:
+                    norms.add(normalize_skill_name(skill.name))
+        return norms
+
+    def _fit_for_user(
+        self, user_id: int, norms: set[str], display: dict[str, str]
+    ) -> tuple[float, list[str]]:
+        if not norms:
+            return 0.0, []
+        matched = norms & self._user_skill_norms(user_id)
+        return (
+            round(len(matched) / len(norms), 4),
+            sorted(display[n] for n in matched),
         )
 
     def _get_project_or_404(self, project_id: int):
@@ -399,17 +720,31 @@ class TeamProjectService:
     def _check_college(self, project, user_id: int) -> None:
         if not project.require_same_college:
             return
+        from app.data.colleges import same_college
+
         profile = self.profile_repo.get_by_user_id(user_id)
-        user_college = (
-            profile.college.strip().lower()
-            if profile and profile.college
-            else ""
-        )
-        wanted = (project.college or "").strip().lower()
-        if not user_college or user_college != wanted:
+        user_college = profile.college if profile else None
+        user_college_id = profile.college_id if profile else None
+        if not same_college(
+            user_college,
+            user_college_id,
+            project.college,
+            project.college_id,
+        ):
             raise ValidationException(
                 f"This project requires teammates from {project.college}"
             )
+
+    @staticmethod
+    def _resolve_college(
+        college_id: str | None, college_text: str | None
+    ) -> tuple[str | None, str | None]:
+        from app.data.colleges import resolve_input
+
+        try:
+            return resolve_input(college_id, college_text)
+        except ValueError as exc:
+            raise ValidationException(str(exc))
 
     def _refresh_embedding(self, project_id: int) -> None:
         project = self.team_repo.get_by_id(project_id)
@@ -421,6 +756,7 @@ class TeamProjectService:
         )
         project.embedding_updated_at = datetime.now(timezone.utc)
         self.db.commit()
+        result_cache.bump_version(result_cache.project_scope(project_id))
 
     def _normalize_tech_stack(self, tech_stack: list[str] | None) -> list[str]:
         if not tech_stack:
@@ -438,13 +774,9 @@ class TeamProjectService:
             result.append(cleaned)
         return result[:30]
 
-    def _normalize_college(self, college: str | None) -> str | None:
-        if college is None:
-            return None
-        cleaned = college.strip()
-        return cleaned or None
-
-    def _to_application_response(self, application) -> TeamApplicationResponse:
+    def _to_application_response(
+        self, application, fit: tuple[float, list[str]] | None = None
+    ) -> TeamApplicationResponse:
         profile = self.profile_repo.get_by_user_id(application.user_id)
         username = None
         if application.user is not None:
@@ -452,15 +784,25 @@ class TeamProjectService:
         else:
             user = self.user_repo.get_by_id(application.user_id)
             username = user.username if user else None
+        project_title = None
+        if getattr(application, "team_project", None) is not None:
+            project_title = application.team_project.title
+        else:
+            project = self.team_repo.get_by_id(application.team_project_id)
+            project_title = project.title if project else None
+        coverage, matched = fit if fit is not None else (0.0, [])
         return TeamApplicationResponse(
             id=application.id,
             team_project_id=application.team_project_id,
+            project_title=project_title,
             user_id=application.user_id,
             username=username or "",
             full_name=profile.full_name if profile else None,
             message=application.message,
             status=application.status,
             created_at=application.created_at,
+            coverage=coverage,
+            matched_skills=matched,
         )
 
     def _to_invitation_response(

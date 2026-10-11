@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { ArrowRight, Users, Code2, Zap } from 'lucide-react'
 import Logo from '../components/Logo'
+import SocialLoginButtons from '../components/SocialLoginButtons'
 import Input from '../components/ui/Input'
 import Button from '../components/ui/Button'
 import { useAuth } from '../context/AuthContext'
@@ -11,20 +12,32 @@ export default function Login() {
   const { login } = useAuth()
   const { toast } = useToast()
   const navigate = useNavigate()
+  const location = useLocation()
+  const from = location.state?.from || '/home'
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
+    const trimmedEmail = email.trim()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setError('Enter a valid email address')
+      return
+    }
+    if (!password) {
+      setError('Enter your password')
+      return
+    }
     setLoading(true)
     try {
-      await login(email, password)
+      await login(trimmedEmail, password)
       toast('Welcome back')
-      navigate('/dashboard')
+      navigate(from, { replace: true })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -38,7 +51,7 @@ export default function Login() {
         <div className="auth-hero-content">
           <div className="auth-brand">
             <Logo size={36} />
-            <span className="auth-brand-name">DevMatch</span>
+            <span className="auth-brand-name">Dev<span className="brand-accent">Match</span></span>
           </div>
           <h1 className="auth-headline">
             Find your next
@@ -89,22 +102,33 @@ export default function Login() {
               onChange={(e) => setEmail(e.target.value)}
               required
               autoComplete="email"
+              autoFocus
             />
             <Input
               label="Password"
               name="password"
-              type="password"
+              type={showPassword ? 'text' : 'password'}
               placeholder="Enter your password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
               autoComplete="current-password"
             />
-            {error && <div className="auth-error">{error}</div>}
+            <label className="auth-show-password">
+              <input
+                type="checkbox"
+                checked={showPassword}
+                onChange={(e) => setShowPassword(e.target.checked)}
+              />
+              Show password
+            </label>
+            {error && <div className="auth-error" role="alert">{error}</div>}
             <Button type="submit" loading={loading} className="auth-submit">
               Log in <ArrowRight size={16} />
             </Button>
           </form>
+
+          <SocialLoginButtons from={from} />
 
           <p className="auth-switch">
             New to DevMatch?{' '}

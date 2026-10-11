@@ -36,6 +36,8 @@ class TeamProject(Base):
 
     college: Mapped[str | None] = mapped_column(sa.String(255))
 
+    college_id: Mapped[str | None] = mapped_column(sa.String(100), index=True)
+
     require_same_college: Mapped[bool] = mapped_column(default=False, nullable=False)
 
     embedding: Mapped[list[float] | None] = mapped_column(sa.JSON)

@@ -1,3 +1,4 @@
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.models.user import User
@@ -11,14 +12,23 @@ class UserRepository:
         return self.db.query(User).filter(User.id == user_id).first()
 
     def get_by_email(self, email: str) -> User | None:
-        return self.db.query(User).filter(User.email == email).first()
+        return (
+            self.db.query(User)
+            .filter(func.lower(User.email) == (email or "").strip().lower())
+            .first()
+        )
 
     def get_by_username(self, username: str) -> User | None:
-        return self.db.query(User).filter(User.username == username).first()
+        return (
+            self.db.query(User)
+            .filter(func.lower(User.username) == (username or "").strip().lower())
+            .first()
+        )
 
     def get_by_email_or_username(self, email: str, username: str) -> User | None:
         return self.db.query(User).filter(
-            (User.email == email) | (User.username == username)
+            (func.lower(User.email) == (email or "").strip().lower())
+            | (func.lower(User.username) == (username or "").strip().lower())
         ).first()
 
     def create(self, user: User) -> User:

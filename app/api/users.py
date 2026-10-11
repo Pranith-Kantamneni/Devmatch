@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, get_db
@@ -15,11 +15,13 @@ router = APIRouter(prefix="/users", tags=["Users"])
     summary="List users (public information)",
 )
 def list_users(
+    response: Response,
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
     repo = UserRepository(db)
+    response.headers["X-Total-Count"] = str(repo.count_users())
     return repo.list_users(skip=skip, limit=limit)
 
 

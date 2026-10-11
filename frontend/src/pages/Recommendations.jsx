@@ -36,6 +36,10 @@ function MatchScore({ score }) {
 
 function TeammateCard({ rec }) {
   const { user, profile, similarity_score, skill_overlap } = rec
+  const overlapSet = new Set((skill_overlap || []).map((s) => s.toLowerCase()))
+  const freshSkills = (profile.skills || [])
+    .map((s) => s.name)
+    .filter((n) => !overlapSet.has(n.toLowerCase()))
   return (
     <Link to={`/developers/${user.id}`} className="dev-card">
       <div className="dev-card-top">
@@ -50,7 +54,7 @@ function TeammateCard({ rec }) {
       {profile.bio && <p className="dev-card-bio">{profile.bio}</p>}
 
       <div className="dev-card-meta">
-        {profile.available && (
+        {profile.availability && (
           <span className="dev-card-meta-item available"><UserCheck size={13} /> Open to teams</span>
         )}
         {profile.location && (
@@ -76,10 +80,21 @@ function TeammateCard({ rec }) {
 
       {skill_overlap.length > 0 && (
         <div className="dev-card-overlap">
-          <span className="dev-card-overlap-label">Shared skills:</span>
+          <span className="dev-card-overlap-label">You share:</span>
           {skill_overlap.slice(0, 3).map((s) => (
             <span key={s} className="dev-card-overlap-skill">{s}</span>
           ))}
+        </div>
+      )}
+      {freshSkills.length > 0 && (
+        <div className="dev-card-overlap dev-card-brings">
+          <span className="dev-card-overlap-label">They bring:</span>
+          {freshSkills.slice(0, 3).map((s) => (
+            <span key={s} className="dev-card-overlap-skill">{s}</span>
+          ))}
+          {freshSkills.length > 3 && (
+            <span className="dev-card-overlap-skill">+{freshSkills.length - 3}</span>
+          )}
         </div>
       )}
 
@@ -94,15 +109,18 @@ export default function Recommendations() {
   const { toast } = useToast()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
     else setRefreshing(true)
+    setLoadError('')
     try {
       const res = await api.getRecommendations({ limit: 20 })
       setData(res)
     } catch (err) {
+      setLoadError(err.message || 'Could not load recommendations')
       toast(err.message, 'error')
     } finally {
       setLoading(false)
@@ -139,12 +157,22 @@ export default function Recommendations() {
             </div>
           ))}
         </div>
+      ) : loadError && !data ? (
+        <Card>
+          <EmptyState
+            icon={<Users size={32} />}
+            title="Could not load teammates"
+            description={loadError}
+            action={<Button size="sm" variant="secondary" onClick={() => load()}>Retry</Button>}
+          />
+        </Card>
       ) : !data || data.recommendations.length === 0 ? (
         <Card>
           <EmptyState
             icon={<Users size={32} />}
             title="No teammates found yet"
-            description="There aren't enough developer profiles to match against. Add more skills to your profile, or check back once more developers join."
+            description="Add skills and projects to your profile so the engine has something to match — or check back once more developers join."
+            action={<Link to="/dashboard"><Button size="sm">Complete my profile</Button></Link>}
           />
         </Card>
       ) : (

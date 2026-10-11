@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { ArrowRight, Users, Target, Zap } from 'lucide-react'
 import Logo from '../components/Logo'
+import SocialLoginButtons from '../components/SocialLoginButtons'
 import Input from '../components/ui/Input'
 import Button from '../components/ui/Button'
 import { useAuth } from '../context/AuthContext'
@@ -11,10 +12,13 @@ export default function Register() {
   const { register } = useAuth()
   const { toast } = useToast()
   const navigate = useNavigate()
+  const location = useLocation()
+  const from = location.state?.from || '/home'
 
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -22,20 +26,34 @@ export default function Register() {
     e.preventDefault()
     setError('')
 
-    if (username.length < 3) {
+    const trimmedUsername = username.trim()
+    const trimmedEmail = email.trim()
+    if (trimmedUsername.length < 3) {
       setError('Username must be at least 3 characters')
+      return
+    }
+    if (!/^[a-zA-Z0-9_.-]+$/.test(trimmedUsername)) {
+      setError('Username may only contain letters, numbers, dots, dashes, and underscores')
+      return
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setError('Enter a valid email address')
       return
     }
     if (password.length < 8) {
       setError('Password must be at least 8 characters')
       return
     }
+    if (password !== confirmPassword) {
+      setError('Passwords do not match')
+      return
+    }
 
     setLoading(true)
     try {
-      await register(username, email, password)
+      await register(trimmedUsername, trimmedEmail, password)
       toast('Account created — welcome to DevMatch')
-      navigate('/dashboard')
+      navigate(from, { replace: true })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -49,7 +67,7 @@ export default function Register() {
         <div className="auth-hero-content">
           <div className="auth-brand">
             <Logo size={36} />
-            <span className="auth-brand-name">DevMatch</span>
+            <span className="auth-brand-name">Dev<span className="brand-accent">Match</span></span>
           </div>
           <h1 className="auth-headline">
             Start forming your
@@ -90,6 +108,7 @@ export default function Register() {
               onChange={(e) => setUsername(e.target.value)}
               required
               autoComplete="username"
+              autoFocus
             />
             <Input
               label="Email"
@@ -111,12 +130,25 @@ export default function Register() {
               required
               autoComplete="new-password"
               hint="Must be at least 8 characters"
+              minLength={8}
             />
-            {error && <div className="auth-error">{error}</div>}
+            <Input
+              label="Confirm password"
+              name="confirmPassword"
+              type="password"
+              placeholder="Repeat your password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              required
+              autoComplete="new-password"
+            />
+            {error && <div className="auth-error" role="alert">{error}</div>}
             <Button type="submit" loading={loading} className="auth-submit">
               Create account <ArrowRight size={16} />
             </Button>
           </form>
+
+          <SocialLoginButtons from={from} />
 
           <p className="auth-switch">
             Already have an account?{' '}

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Save, X, Plus, Trash2, User, Code2, Briefcase, GraduationCap,
@@ -31,14 +31,36 @@ const EXPERIENCE_LEVELS = [
 const EMPTY_SKILL = { name: '', category: 'language', proficiency: 3, years_experience: 1 }
 const EMPTY_EXP = { title: '', company: '', duration: '', description: '' }
 const EMPTY_EDU = { degree: '', institution: '', year: '' }
-const EMPTY_PROJ = { title: '', description: '' }
+const EMPTY_PROJ = { title: '', description: '', skills: [], skillsText: '', url: '' }
+
+function normalizeProject(p) {
+  const skills = Array.isArray(p.skills) ? p.skills : []
+  return {
+    title: p.title || '',
+    description: p.description || '',
+    skills,
+    skillsText: skills.join(', '),
+    url: p.url || '',
+  }
+}
+
+const STORAGE_KEY = 'devmatch_resume_parsed'
+
+function loadStoredParsed() {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
 
 export default function ResumeReview() {
   const location = useLocation()
   const navigate = useNavigate()
   const { toast } = useToast()
 
-  const parsed = location.state?.parsed || null
+  const parsed = location.state?.parsed || loadStoredParsed()
 
   const [form, setForm] = useState(() => ({
     full_name: parsed?.full_name || '',
@@ -50,9 +72,28 @@ export default function ResumeReview() {
     skills: parsed?.skills?.length ? parsed.skills.map((s) => ({ ...s })) : [{ ...EMPTY_SKILL }],
     experience: parsed?.experience?.length ? parsed.experience.map((e) => ({ ...e })) : [],
     education: parsed?.education?.length ? parsed.education.map((e) => ({ ...e })) : [],
-    projects: parsed?.projects?.length ? parsed.projects.map((p) => ({ ...p })) : [],
+    projects: parsed?.projects?.length ? parsed.projects.map(normalizeProject) : [],
   }))
   const [saving, setSaving] = useState(false)
+
+  // Persist across refresh so a reload doesn't wipe the parsed data.
+  useEffect(() => {
+    if (location.state?.parsed) {
+      try {
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(location.state.parsed))
+      } catch {
+        /* storage full/blocked — non-fatal */
+      }
+    }
+  }, [location.state])
+
+  const clearStored = () => {
+    try {
+      sessionStorage.removeItem(STORAGE_KEY)
+    } catch {
+      /* ignore */
+    }
+  }
 
   if (!parsed) {
     return (
@@ -124,16 +165,21 @@ export default function ResumeReview() {
 
       for (const project of form.projects) {
         if (!project.title.trim()) continue
+        const skill_names = (project.skillsText || '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
         await api.addProject({
           title: project.title,
           description: project.description || null,
-          url: null,
-          skill_names: [],
+          url: project.url.trim() || null,
+          skill_names,
         })
       }
 
       toast('Profile updated from resume')
-      navigate('/dashboard')
+      clearStored()
+      navigate('/dashboard', { replace: true })
     } catch (err) {
       toast(err.message, 'error')
     } finally {
@@ -148,15 +194,17 @@ export default function ResumeReview() {
           <h1 className="page-title">Review extracted resume</h1>
           <p className="page-subtitle">Confirm and edit the details parsed from your resume</p>
         </div>
-        <Button variant="ghost" onClick={() => navigate('/dashboard')}>
+        <Button variant="ghost" onClick={() => { clearStored(); navigate('/dashboard', { replace: true }) }} disabled={saving}>
           <X size={16} /> Discard
         </Button>
       </div>
 
-      <div className="review-note">
-        <Info size={18} />
-        <p>{parsed.note}</p>
-      </div>
+      {parsed.note && (
+        <div className="review-note">
+          <Info size={18} />
+          <p>{parsed.note}</p>
+        </div>
+      )}
 
       <div className="review-grid">
         <Card className="review-card">
@@ -241,6 +289,10 @@ export default function ResumeReview() {
               <Plus size={14} /> Add
             </Button>
           </div>
+          <div className="review-note review-note-inline">
+            <Info size={15} />
+            <p>Experience is kept for your reference — only profile fields, skills, and projects are saved.</p>
+          </div>
           <div className="review-list">
             {form.experience.length === 0 && <p className="section-empty">No experience detected</p>}
             {form.experience.map((exp, i) => (
@@ -301,12 +353,16 @@ export default function ResumeReview() {
             {form.projects.map((proj, i) => (
               <div key={i} className="review-item">
                 <div className="review-item-row">
-                  <input className="input" placeholder="Project title" value={proj.title || ''} onChange={(e) => setProj(i, 'title', e.target.value)} />
-                  <button className="icon-btn danger review-remove" onClick={() => setForm((f) => ({ ...f, projects: f.projects.filter((_, idx) => idx !== i) }))} title="Remove">
+                  <input className="input" placeholder="Project title" aria-label="Project title" value={proj.title || ''} onChange={(e) => setProj(i, 'title', e.target.value)} />
+                  <button className="icon-btn danger review-remove" onClick={() => setForm((f) => ({ ...f, projects: f.projects.filter((_, idx) => idx !== i) }))} title="Remove project" aria-label="Remove project">
                     <Trash2 size={15} />
                   </button>
                 </div>
-                <textarea className="input textarea" placeholder="Description" value={proj.description || ''} onChange={(e) => setProj(i, 'description', e.target.value)} />
+                <textarea className="input textarea" placeholder="Description" aria-label="Project description" value={proj.description || ''} onChange={(e) => setProj(i, 'description', e.target.value)} />
+                <div className="review-item-row">
+                  <input className="input" placeholder="Tech used (comma separated)" aria-label="Technologies used" value={proj.skillsText || ''} onChange={(e) => setProj(i, 'skillsText', e.target.value)} />
+                  <input className="input" placeholder="Link (https://…)" aria-label="Project link" value={proj.url || ''} onChange={(e) => setProj(i, 'url', e.target.value)} />
+                </div>
               </div>
             ))}
           </div>
@@ -314,7 +370,7 @@ export default function ResumeReview() {
       </div>
 
       <div className="review-footer">
-        <Button variant="ghost" onClick={() => navigate('/dashboard')}>Discard</Button>
+        <Button variant="ghost" onClick={() => { clearStored(); navigate('/dashboard', { replace: true }) }} disabled={saving}>Discard</Button>
         <Button onClick={handleSave} loading={saving}>
           <Save size={16} /> Save to profile
         </Button>

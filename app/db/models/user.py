@@ -23,9 +23,9 @@ class User(Base):
         nullable=False,
     )
 
-    password_hash: Mapped[str] = mapped_column(
+    password_hash: Mapped[str | None] = mapped_column(
         String(255),
-        nullable=False,
+        nullable=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(
@@ -53,6 +53,11 @@ class User(Base):
     )
 
     projects: Mapped[list["Project"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    oauth_accounts: Mapped[list["OAuthAccount"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
     )

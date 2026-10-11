@@ -1,5 +1,8 @@
 from fastapi import status
 
+from app.core.config import get_settings
+from app.services.embedding_service import EmbeddingService
+from app.services.matching_service import MatchingService
 from conftest import create_user_with_token
 
 
@@ -556,6 +559,29 @@ class TestProjectRecommendations:
         assert data["total_candidates"] == 1
         assert data["recommendations"][0]["username"] == "bob"
 
+    def test_recommendations_have_stars_in_range(self, client):
+        h1 = make_user(client, "alice", "alice@example.com", ["Python"])
+        make_user(client, "bob", "bob@example.com", ["Python", "FastAPI"])
+        make_user(client, "carol", "carol@example.com", ["Java"])
+        project_id = make_project(client, h1).json()["id"]
+        data = client.get(
+            f"/api/v1/team-projects/{project_id}/recommendations", headers=h1
+        ).json()
+        assert data["recommendations"]
+        for rec in data["recommendations"]:
+            assert 1 <= rec["stars"] <= 5
+
+    def test_full_coverage_ranks_first(self, client):
+        h1 = make_user(client, "alice", "alice@example.com", ["Python"])
+        make_user(client, "bob", "bob@example.com", ["Python"])
+        make_user(client, "carol", "carol@example.com", ["Java"])
+        project_id = make_project(client, h1).json()["id"]
+        data = client.get(
+            f"/api/v1/team-projects/{project_id}/recommendations", headers=h1
+        ).json()
+        assert data["recommendations"][0]["username"] == "bob"
+        assert data["recommendations"][0]["stars"] >= data["recommendations"][-1]["stars"]
+
     def test_recommendations_annotate_status(self, client):
         h1 = make_user(client, "alice", "alice@example.com", ["Python"])
         h2 = make_user(client, "bob", "bob@example.com", ["Python"])
@@ -570,3 +596,244 @@ class TestProjectRecommendations:
             f"/api/v1/team-projects/{project_id}/recommendations", headers=h1
         ).json()
         assert data["recommendations"][0]["invitation_status"] == "pending"
+
+
+class TestProjectStars:
+    def test_all_skills_max_depth_strong_fit_is_five(self):
+        svc = MatchingService.__new__(MatchingService)
+        dev = {"python": (5, 8.0), "react": (5, 6.0)}
+        score = svc._project_match_score(
+            {"python", "react"}, dev, set(dev.keys()), 0.9
+        )
+        assert svc._score_to_stars(score) == 5
+
+    def test_no_overlap_is_one_star(self):
+        svc = MatchingService.__new__(MatchingService)
+        dev = {"java": (5, 5.0)}
+        score = svc._project_match_score(
+            {"python"}, dev, set(dev.keys()), 0.1
+        )
+        assert svc._score_to_stars(score) == 1
+
+    def test_full_coverage_beats_partial(self):
+        svc = MatchingService.__new__(MatchingService)
+        full_dev = {"python": (3, 1.0), "react": (3, 1.0)}
+        full = svc._project_match_score(
+            {"python", "react"}, full_dev, set(full_dev.keys()), 0.4
+        )
+        partial_dev = {"python": (5, 8.0)}
+        partial = svc._project_match_score(
+            {"python", "react"}, partial_dev, set(partial_dev.keys()), 0.9
+        )
+        assert full > partial
+        assert svc._score_to_stars(full) >= svc._score_to_stars(partial)
+
+    def test_stars_clamped(self):
+        svc = MatchingService.__new__(MatchingService)
+        assert svc._score_to_stars(1.5) == 5
+        assert svc._score_to_stars(-0.5) == 1
+        assert svc._score_to_stars(0.0) == 1
+        assert svc._score_to_stars(1.0) == 5
+
+    def test_no_required_skills_falls_back_to_embedding(self):
+        svc = MatchingService.__new__(MatchingService)
+        assert svc._project_match_score(set(), {}, set(), 0.85) > svc._project_match_score(
+            set(), {}, set(), 0.1
+        )
+
+    def test_portfolio_project_skills_count_toward_coverage(self):
+        svc = MatchingService.__new__(MatchingService)
+        score_without = svc._project_match_score({"python"}, {}, set(), 0.2)
+        score_with = svc._project_match_score({"python"}, {}, {"python"}, 0.2)
+        assert score_with > score_without
+        assert svc._score_to_stars(score_with) >= 2
+
+    def test_aliases_match(self):
+        from app.services.matching_service import normalize_skill_name
+
+        assert normalize_skill_name("React.js") == "react"
+        assert normalize_skill_name("Postgres") == "postgresql"
+        assert normalize_skill_name("ML") == "machine learning"
+        svc = MatchingService.__new__(MatchingService)
+        dev = {"react": (4, 2.0)}
+        score = svc._project_match_score(
+            {normalize_skill_name("React.js")}, dev, {"react"}, 0.3
+        )
+        assert svc._score_to_stars(score) >= 3
+
+
+class TestRecommendationInsights:
+    def test_coverage_missing_bonus_evidence(self, client):
+        h1 = make_user(client, "alice", "alice@example.com", ["Python"])
+        h2 = make_user(client, "bob", "bob@example.com", ["Python", "Docker"])
+        # Bob proves Python with a portfolio project tagged Python.
+        client.post(
+            "/api/v1/profiles/me/projects",
+            json={"title": "Shop API", "skill_names": ["Python"]},
+            headers=h2,
+        )
+        project_id = make_project(client, h1).json()["id"]
+        data = client.get(
+            f"/api/v1/team-projects/{project_id}/recommendations", headers=h1
+        ).json()
+        bob = [r for r in data["recommendations"] if r["username"] == "bob"][0]
+        # Required = {python, react}: bob covers python only.
+        assert bob["coverage"] == 0.5
+        assert "python" in bob["skill_overlap"]
+        assert "React" in bob["missing_skills"]
+        assert "docker" in [b.lower() for b in bob["bonus_skills"]]
+        evidence = {e["skill"]: e for e in bob["skill_evidence"]}
+        assert "python" in evidence
+        assert "Shop API" in evidence["python"]["project_titles"]
+        assert evidence["python"]["listed"] is True
+
+    def test_skill_gaps_endpoint(self, client):
+        h1 = make_user(client, "alice", "alice@example.com", ["Python"])
+        h2 = make_user(client, "bob", "bob@example.com", ["Python"])
+        project_id = make_project(client, h1).json()["id"]
+        # Before bob joins: alice (creator, python) covers python, react open.
+        gaps = client.get(
+            f"/api/v1/team-projects/{project_id}/skill-gaps", headers=h1
+        ).json()
+        assert gaps["total_required"] == 2
+        assert "python" in gaps["covered_skills"]
+        assert "React" in gaps["uncovered_skills"]
+        assert gaps["coverage"] == 0.5
+        # Non-creator is forbidden.
+        forbidden = client.get(
+            f"/api/v1/team-projects/{project_id}/skill-gaps", headers=h2
+        )
+        assert forbidden.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_applications_carry_fit(self, client):
+        h1 = make_user(client, "alice", "alice@example.com", ["Python", "React"])
+        h2 = make_user(client, "bob", "bob@example.com", ["Python", "React"])
+        project_id = make_project(client, h1).json()["id"]
+        client.post(f"/api/v1/team-projects/{project_id}/apply", json={}, headers=h2)
+        apps = client.get(
+            f"/api/v1/team-projects/{project_id}/applications", headers=h1
+        ).json()
+        assert apps[0]["coverage"] == 1.0
+        assert set(apps[0]["matched_skills"]) == {"python", "React"}
+
+    def test_variant_spellings_match(self, client):
+        """'Fast Api' listed by the dev must cover 'FastAPI' required by the team."""
+        h1 = make_user(client, "alice", "alice@example.com", ["Python"])
+        make_user(client, "bob", "bob@example.com", ["Fast Api"])
+        project_id = make_project(
+            client,
+            h1,
+            required_skills=[{"name": "FastAPI", "category": "framework"}],
+            tech_stack=[],
+        ).json()["id"]
+        data = client.get(
+            f"/api/v1/team-projects/{project_id}/recommendations", headers=h1
+        ).json()
+        bob = [r for r in data["recommendations"] if r["username"] == "bob"][0]
+        assert bob["coverage"] == 1.0, bob
+        assert bob["missing_skills"] == []
+        assert [s.lower() for s in bob["skill_overlap"]] == ["fast api"]
+
+    def test_dot_and_case_variants_match(self, client):
+        from app.services.matching_service import normalize_skill_name
+
+        assert normalize_skill_name("Fast Api") == normalize_skill_name("FastAPI")
+        assert normalize_skill_name("fast_api") == normalize_skill_name("FastAPI")
+        assert normalize_skill_name("React.js") == normalize_skill_name("react")
+        assert normalize_skill_name("React Native") != normalize_skill_name("react")
+        assert normalize_skill_name("Node") == normalize_skill_name("Node.js")
+
+
+class TestTeamChat:
+    def _setup(self, client):
+        from test_team_projects import make_project, make_user
+
+        h1 = make_user(client, "chat_alice", "chat_alice@example.com", ["Python"])
+        h2 = make_user(client, "chat_bob", "chat_bob@example.com", ["Python"])
+        h3 = make_user(client, "chat_eve", "chat_eve@example.com", ["Python"])
+        project_id = make_project(client, h1).json()["id"]
+        # Second member unlocks team chat.
+        client.post(f"/api/v1/team-projects/{project_id}/apply", json={}, headers=h2)
+        app_id = client.get(
+            f"/api/v1/team-projects/{project_id}/applications", headers=h1
+        ).json()[0]["id"]
+        client.post(
+            f"/api/v1/team-projects/{project_id}/applications/{app_id}/accept",
+            headers=h1,
+        )
+        return h1, h2, h3, project_id
+
+    def test_member_chat_roundtrip(self, client):
+        h1, h2, _, project_id = self._setup(client)
+        # Bob (member) and Alice (creator) can chat.
+        sent = client.post(
+            f"/api/v1/team-projects/{project_id}/messages",
+            json={"body": "Hello team!"},
+            headers=h2,
+        )
+        assert sent.status_code == status.HTTP_201_CREATED
+        assert sent.json()["sender_username"] == "chat_bob"
+        messages = client.get(
+            f"/api/v1/team-projects/{project_id}/messages", headers=h1
+        ).json()
+        assert [m["body"] for m in messages] == ["Hello team!"]
+
+    def test_non_member_forbidden(self, client):
+        _, _, h3, project_id = self._setup(client)
+        denied = client.get(
+            f"/api/v1/team-projects/{project_id}/messages", headers=h3
+        )
+        assert denied.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_blank_message_rejected(self, client):
+        h1, _, _, project_id = self._setup(client)
+        response = client.post(
+            f"/api/v1/team-projects/{project_id}/messages",
+            json={"body": "   "},
+            headers=h1,
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+    def test_message_pagination(self, client):
+        from test_team_projects import make_project, make_user
+
+        h1, _, _, project_id = self._setup(client)
+        for i in range(5):
+            client.post(
+                f"/api/v1/team-projects/{project_id}/messages",
+                json={"body": f"msg {i}"},
+                headers=h1,
+            )
+        latest = client.get(
+            f"/api/v1/team-projects/{project_id}/messages",
+            params={"limit": 2},
+            headers=h1,
+        ).json()
+        assert [m["body"] for m in latest] == ["msg 3", "msg 4"]
+        older = client.get(
+            f"/api/v1/team-projects/{project_id}/messages",
+            params={"limit": 10, "before_id": latest[0]["id"]},
+            headers=h1,
+        ).json()
+        assert [m["body"] for m in older] == ["msg 0", "msg 1", "msg 2"]
+
+    def test_application_chat_permissions(self, client):
+        from test_team_projects import make_project, make_user
+
+        h1, h2, h3, project_id = self._setup(client)
+        client.post(f"/api/v1/team-projects/{project_id}/apply", json={}, headers=h2)
+        app_id = client.get(
+            f"/api/v1/team-projects/{project_id}/applications", headers=h1
+        ).json()[0]["id"]
+        url = f"/api/v1/team-projects/{project_id}/applications/{app_id}/messages"
+
+        # Outsider is forbidden.
+        assert client.get(url, headers=h3).status_code == status.HTTP_403_FORBIDDEN
+        # Applicant asks a question, creator answers.
+        q = client.post(url, json={"body": "Can I join remotely?"}, headers=h2)
+        assert q.status_code == status.HTTP_201_CREATED
+        a = client.post(url, json={"body": "Yes! Welcome."}, headers=h1)
+        assert a.status_code == status.HTTP_201_CREATED
+        thread = client.get(url, headers=h2).json()
+        assert [m["body"] for m in thread] == ["Can I join remotely?", "Yes! Welcome."]
+        assert thread[0]["sender_username"] == "chat_bob"

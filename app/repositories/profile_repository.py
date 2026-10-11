@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.models.profile import DeveloperProfile
-from app.db.models.project import Project
+from app.db.models.project import Project, ProjectSkill
 from app.db.models.skill import UserSkill
 from app.db.models.user import User
 
@@ -64,7 +64,7 @@ class ProfileRepository:
     def get_user_projects(self, user_id: int) -> list[Project]:
         return (
             self.db.query(Project)
-            .options(selectinload(Project.skills))
+            .options(selectinload(Project.skills).selectinload(ProjectSkill.skill))
             .filter(Project.user_id == user_id)
             .all()
         )
@@ -77,5 +77,6 @@ class ProfileRepository:
             ),
             selectinload(DeveloperProfile.user)
             .selectinload(User.projects)
-            .selectinload(Project.skills),
+            .selectinload(Project.skills)
+            .selectinload(ProjectSkill.skill),
         )
